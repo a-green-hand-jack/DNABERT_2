@@ -1,6 +1,6 @@
 #!/bin/bash
 
-data_path=$1
+data_path=../../Datasets/Human_genome
 lr=3e-5
 
 echo "The provided data_path is $data_path"
@@ -10,7 +10,7 @@ do
     for data in H3 H3K14ac H3K36me3 H3K4me1 H3K4me2 H3K4me3 H3K79me3 H3K9ac H4 H4ac
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/EMP/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_EMP_${data}_seed${seed} \
@@ -37,7 +37,7 @@ do
     for data in prom_core_all prom_core_notata
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/prom/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_prom_${data}_seed${seed} \
@@ -63,7 +63,7 @@ do
     for data in prom_core_tata
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/prom/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_prom_${data}_seed${seed} \
@@ -88,7 +88,7 @@ do
     for data in prom_300_all prom_300_notata
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/prom/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_prom_${data}_seed${seed} \
@@ -115,7 +115,7 @@ do
     for data in prom_300_tata
     do 
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/prom/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_prom_${data}_seed${seed} \
@@ -141,7 +141,7 @@ do
     for data in reconstructed
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/splice/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_splice_${data}_seed${seed} \
@@ -168,7 +168,7 @@ do
     for data in covid
     do
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/virus/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_virus_${data}_seed${seed} \
@@ -193,7 +193,7 @@ do
     for data in 0 1 2 3 4
     do 
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/mouse/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_mouse_${data}_seed${seed} \
@@ -220,7 +220,7 @@ do
     for data in 0 1 2 3 4
     do 
         python train.py \
-            --model_name_or_path zhihan1996/DNABERT-2-117M \
+            --model_name_or_path "../zhihan1996/DNABERT-2-117M" \
             --data_path  $data_path/GUE/tf/$data \
             --kmer -1 \
             --run_name DNABERT2_${vocab}_${lr}_tf_${data}_seed${seed} \

@@ -227,6 +227,7 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # load tokenizer
+    print("这里是预训练模型保存的位置",model_args.model_name_or_path)
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -234,6 +235,7 @@ def train():
         padding_side="right",
         use_fast=True,
         trust_remote_code=True,
+        local_files_only=True,  # 为了模型在本地的现实
     )
 
     if "InstaDeepAI" in model_args.model_name_or_path:
@@ -258,6 +260,7 @@ def train():
         cache_dir=training_args.cache_dir,
         num_labels=train_dataset.num_labels,
         trust_remote_code=True,
+        local_files_only=True,  # 为了模型在本地的现实
     )
 
     # configure LoRA
@@ -283,7 +286,7 @@ def train():
                                    eval_dataset=val_dataset,
                                    data_collator=data_collator)
     trainer.train()
-
+ 
     if training_args.save_model:
         trainer.save_state()
         safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
