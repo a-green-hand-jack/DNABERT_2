@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
-
-
 import torch 
 import transformers
 from transformers import AutoTokenizer
@@ -36,10 +33,12 @@ from peft import (
     get_peft_model_state_dict,
     AdaLoraModel
 )
+def read_txt_file(file_path):
+    with open(file_path, 'r') as file:
+        content = file.read()
+        sequence_list = content.split()
 
-
-
-
+    return sequence_list
 
 @dataclass
 class ModelArguments:
@@ -53,10 +52,6 @@ class ModelArguments:
     lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
     lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
         
-model_args = ModelArguments()
-
-
-
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
@@ -91,32 +86,6 @@ class TrainingArguments(transformers.TrainingArguments):
     save_model: bool = field(default=False)
     seed: int = field(default=42)
 
-training_args = TrainingArguments()     
-
-
-
-
-#tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=True,
-        trust_remote_code=True,
-    )
-
-# Simulate tokenization of DNA sequences
-sequences = ["ATGCGTACGTTAGCTAGCTAGCTAGCGTATCGATCGATCG", 
-             "CGTACGTAGCTAGCTAGCGTATCGATCGATCGATGCGTAC"] * 100  # Example DNA sequences
-
-# For demonstration, let's treat each nucleotide as a separate 'word' (highly simplified)
-tokenized_inputs = tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
-
-
-
-
-
 class DNADataset(Dataset):
     def __init__(self, encodings):
         self.encodings = encodings
@@ -126,22 +95,7 @@ class DNADataset(Dataset):
 
     def __getitem__(self, idx):
         return {key: val[idx] for key, val in self.encodings.items()}
-
-dataset = DNADataset(tokenized_inputs)
-train_size = int(0.8 * len(dataset))
-eval_size = len(dataset) - train_size
-train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
-
-
-
-
-
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True, mlm_probability=0.15)
-
-
-
-
-
+    
 class MLMNetwork(nn.Module):
     def __init__(self, model_name_or_path="bert-base-uncased", cache_dir=None):
         super(MLMNetwork, self).__init__()
@@ -155,41 +109,7 @@ class MLMNetwork(nn.Module):
     @property
     def device(self):
         return next(self.parameters()).device
-
-
-
-
-
-#model = transformers.BertForMaskedLM.from_pretrained(
-#        model_args.model_name_or_path,
-#        cache_dir=training_args.cache_dir,
-        #num_labels=train_dataset.num_labels,
-#        trust_remote_code=True,
-#    )
-#model = MLMNetwork(model_name_or_path="bert-base-uncased")
-model = MLMNetwork(model_name_or_path= model_args.model_name_or_path)
-
-
-
-
-training_args = TrainingArguments(
-    output_dir='./results',
-    num_train_epochs=1,
-    per_device_train_batch_size=8,
-    logging_dir='./logs',
-)
-
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    data_collator=data_collator,
-    # No need for a custom data collator as we're not using dynamic masking here
-)
-
-
-
-
+    
 def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
     model.eval()
     eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=data_collator)
@@ -221,11 +141,98 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
     return accuracy, perplexity.item()
 
 
+def compute_metrics(p):
+    # 计算 eval_matthews_correlation 和其他指标
+    # p 包含预测结果和标签
+
+    # 示例：计算准确率和困惑度
+    predictions, labels = p.predictions, p.label_ids
+    predictions = torch.tensor(predictions)  # 确保是张量
+    labels = torch.tensor(labels)  # 确保是张量
+
+    accuracy = (predictions.argmax(dim=1) == labels).float().mean().item()
+    
+    # 计算困惑度
+    loss = p.loss
+    perplexity = torch.exp(torch.tensor(loss)).item()
+
+    return {"accuracy": accuracy, "perplexity": perplexity}
 
 
-trainer.train()
-accuracy, perplexity = evaluate_mlm(model, tokenizer, data_collator, eval_dataset)
+if __name__ == "__main__":
 
-print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
-print(f"Perplexity: {perplexity:.4f}")
+    model_args = ModelArguments()
+
+    training_args = TrainingArguments(
+        output_dir='./results',
+        num_train_epochs=1,
+        per_device_train_batch_size=8,
+        logging_dir='./logs',
+    )    
+
+    #tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            model_max_length=training_args.model_max_length,
+            padding_side="right",
+            use_fast=True,
+            trust_remote_code=True,
+        )
+
+    # Simulate tokenization of DNA sequences
+    # sequences = ["ATGCGTACGTTAGCTAGCTAGCTAGCGTATCGATCGATCG", 
+    #             "CGTACGTAGCTAGCTAGCGTATCGATCGATCGATGCGTAC"] * 1000  # Example DNA sequences
+    # 采用真实数据
+    # 读取生成的txt文件
+    input_file_path = "../../Different Dataset/Human_genome/huixin/output.txt"
+    sequences = read_txt_file(input_file_path)
+
+    print("首先检查长度")
+    print(len(sequences))
+    # 打印前10个元素
+    print("选择10个元素打印出来:")
+    begin_index = 100
+    print(sequences[begin_index:begin_index + 10])
+    
+
+    # For demonstration, let's treat each nucleotide as a separate 'word' (highly simplified)
+    tokenized_inputs = tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
+
+    dataset = DNADataset(tokenized_inputs)
+    train_size = int(0.8 * len(dataset))
+
+    eval_size = len(dataset) - train_size
+    train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
+    print(train_dataset)
+
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True, mlm_probability=0.15)
+
+    model = MLMNetwork(model_name_or_path= model_args.model_name_or_path)
+
+    
+    # 打印模型结构
+    print(model)
+
+    # 计算模型参数数量
+    num_parameters = sum(p.numel() for p in model.parameters())
+    print(f"Number of parameters: {num_parameters}")
+    # 打印分词器信息
+    print(tokenizer)
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        data_collator=data_collator,
+        # eval_dataset=eval_dataset,
+        # compute_metrics=compute_metrics,  
+    )
+
+
+    trainer.train()
+    accuracy, perplexity = evaluate_mlm(model, tokenizer, data_collator, eval_dataset)
+
+    print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
+    print(f"Perplexity: {perplexity:.4f}")
 
