@@ -1,7 +1,8 @@
 import pandas as pd
 from tqdm import tqdm
 
-dna_path = "24_chromosomes-002.csv"
+dna_path = "../../Dataset/Human_genome/huixin/24_chromosomes-002.csv"
+print(f"load data from {dna_path}")
 # 读取CSV文件
 df = pd.read_csv(dna_path)  # 替换为你的文件路径
 
@@ -35,7 +36,7 @@ split_sequences = [concatenated_sequence[i:i+512] for i in tqdm(range(0, len(con
 resulting_text = ' '.join(split_sequences)
 
 # 保存到txt文件
-output_file_path = "output.txt"
+output_file_path = "../../Dataset/Human_genome/huixin/24_chromosomes-002.txt"
 with open(output_file_path, 'w') as file:
     file.write(resulting_text)
 

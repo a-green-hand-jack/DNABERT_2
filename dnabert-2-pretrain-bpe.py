@@ -3,7 +3,7 @@
 
 import torch 
 import transformers
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, EvalPrediction
 from torch.utils.data import Dataset, DataLoader
 from transformers import DataCollatorForLanguageModeling
 from transformers import BertForMaskedLM, Trainer, TrainingArguments
@@ -140,23 +140,14 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 
     return accuracy, perplexity.item()
 
-
-def compute_metrics(p):
-    # 计算 eval_matthews_correlation 和其他指标
-    # p 包含预测结果和标签
-
-    # 示例：计算准确率和困惑度
-    predictions, labels = p.predictions, p.label_ids
-    predictions = torch.tensor(predictions)  # 确保是张量
-    labels = torch.tensor(labels)  # 确保是张量
-
-    accuracy = (predictions.argmax(dim=1) == labels).float().mean().item()
-    
-    # 计算困惑度
-    loss = p.loss
-    perplexity = torch.exp(torch.tensor(loss)).item()
-
-    return {"accuracy": accuracy, "perplexity": perplexity}
+from datasets import load_metric
+def compute_metrics(eval_preds):
+    metric = load_metric("glue", "mrpc", trust_remote_code=True)
+    logits, labels = eval_preds.predictions, eval_preds.label_ids
+    # 上一行可以直接简写成：
+    # logits, labels = eval_preds  因为它相当于一个tuple
+    predictions = np.argmax(logits, axis=-1)
+    return metric.compute(predictions=predictions, references=labels)
 
 
 if __name__ == "__main__":
@@ -165,7 +156,7 @@ if __name__ == "__main__":
 
     training_args = TrainingArguments(
         output_dir='./results',
-        num_train_epochs=1,
+        num_train_epochs=100,
         per_device_train_batch_size=8,
         logging_dir='./logs',
     )    
@@ -179,25 +170,21 @@ if __name__ == "__main__":
             use_fast=True,
             trust_remote_code=True,
         )
+    
 
-    # Simulate tokenization of DNA sequences
-    # sequences = ["ATGCGTACGTTAGCTAGCTAGCTAGCGTATCGATCGATCG", 
-    #             "CGTACGTAGCTAGCTAGCGTATCGATCGATCGATGCGTAC"] * 1000  # Example DNA sequences
-    # 采用真实数据
-    # 读取生成的txt文件
-    input_file_path = "../../Different Dataset/Human_genome/huixin/output.txt"
+    input_file_path = "../Dataset/Human_genome/huixin/24_chromosomes-002.txt"
     sequences = read_txt_file(input_file_path)
 
-    print("首先检查长度")
-    print(len(sequences))
-    # 打印前10个元素
-    print("选择10个元素打印出来:")
-    begin_index = 100
-    print(sequences[begin_index:begin_index + 10])
+    # print("首先检查长度")
+    # print(len(sequences))
+    # # 打印前10个元素
+    # print("选择1个元素打印出来:")
+    # begin_index = 100
+    # print(sequences[begin_index:begin_index + 1])
     
 
     # For demonstration, let's treat each nucleotide as a separate 'word' (highly simplified)
-    tokenized_inputs = tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
+    tokenized_inputs = tokenizer(sequences[:100], padding=True, truncation=True, max_length=512, return_tensors="pt")
 
     dataset = DNADataset(tokenized_inputs)
     train_size = int(0.8 * len(dataset))
@@ -212,7 +199,7 @@ if __name__ == "__main__":
 
     
     # 打印模型结构
-    print(model)
+    # print(model)
 
     # 计算模型参数数量
     num_parameters = sum(p.numel() for p in model.parameters())
@@ -225,8 +212,8 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=train_dataset,
         data_collator=data_collator,
-        # eval_dataset=eval_dataset,
-        # compute_metrics=compute_metrics,  
+        eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics 
     )
 
 
