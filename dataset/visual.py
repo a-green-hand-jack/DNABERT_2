@@ -25,12 +25,14 @@ def print_dataframe_info(dataframe):
     print(dataframe.head())
     print(f"Shape of the DataFrame: {dataframe.shape}")
 
-def process_sequences(df):
+def process_sequences(df, spacing=3, newline_interval=100):
     """
     Process DNA sequences from the DataFrame.
 
     Parameters:
     - df (pd.DataFrame): Input DataFrame with a 'Sequence' column.
+    - spacing (int): Number of bases between each space. Default is 0 (no spacing).
+    - newline_interval (int): Number of multimers between each newline. Default is 10.
 
     Returns:
     - str: Resulting processed text.
@@ -38,12 +40,23 @@ def process_sequences(df):
     concatenated_sequence = ''.join(df['Sequence'])
 
     split_sequences = []
-    for i in tqdm(range(0, len(concatenated_sequence), 512), desc="Processing"):
-        sequence_chunk = concatenated_sequence[i:i + 512]
-        if sequence_chunk.count('N') / len(sequence_chunk) <= 0.15:
-            split_sequences.append(sequence_chunk)
+    block_length = (spacing + 1) * newline_interval
+    for i in tqdm(range(0, len(concatenated_sequence), block_length), desc="Processing"):
+        sequence_chunk = concatenated_sequence[i:i + block_length]
 
-    return '\n'.join(split_sequences)
+        # Insert space every 'spacing' bases
+        spaced_sequence = ''.join([base + ' ' * spacing for base in sequence_chunk])
+
+        if sequence_chunk.count('N') / len(sequence_chunk) <= 0.15:
+            split_sequences.append(spaced_sequence)
+
+    # Insert newline every 'newline_interval' multimers
+    processed_text = '\n'.join(split_sequences)
+    processed_text = '\n'.join(processed_text.splitlines()[i:i + newline_interval] for i in
+                               range(0, len(processed_text.splitlines()), newline_interval))
+
+    return processed_text
+
 
 
 def set_random_seed(seed):
@@ -89,12 +102,14 @@ def main():
     # Modify file paths as needed
     csv_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
     sample_ratio = 0.01
-    txt_output_path =f"../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}.txt"
+    spacing = 3
+    new_line = 100
+    txt_output_path =f"../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}-{spacing}-{new_line}.txt"
 
     df = load_data(csv_file_path)
     print_dataframe_info(df)
 
-    resulting_text = process_sequences(df)
+    resulting_text = process_sequences(df, spacing, new_line)
     save_resulting_text_with_sampling(resulting_text, txt_output_path, sample_ratio)
 
     # Load and print the first 5 lines of the TXT file
@@ -102,7 +117,7 @@ def main():
         loaded_text = file.read()
 
     print("\nLoaded text from TXT file - First 5 lines:")
-    print(loaded_text[:512 * 5])
+    print(loaded_text[:(1+spacing) * new_line])
 
 if __name__ == "__main__":
     main()

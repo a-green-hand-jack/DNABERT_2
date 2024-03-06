@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Sequence, Tuple, List
 from multiprocessing import Pool
 import pickle
+from pprint import pprint
 
 import torch
 import transformers
@@ -48,7 +49,7 @@ class ModelArguments:
     model_type: Optional[str] = field(default="dnabert")
     n_process: int = field(default=1, metadata={"help":"none"})
     overwrite_cache: bool = False
-    model_name_or_path: Optional[str] = field(default="../zhihan1996/DNABERT-2-117M")
+    model_name_or_path: Optional[str] = field(default="zhihan1996/DNABERT-2-117M")
     #model_name_or_path: Optional[str] = field(default="google-bert/bert-base-uncased")
     #model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
     #model_name_or_path: Optional[str] = field(default="decapoda-research/llama-7b-hf")
@@ -91,91 +92,6 @@ class TrainingArguments(transformers.TrainingArguments):
     eval_and_save_results: bool = field(default=True)
     save_model: bool = field(default=False)
     seed: int = field(default=42)
-
-
-
-
-def convert_line_to_example(tokenizer, lines, max_length, add_special_tokens=True):
-    examples = tokenizer.batch_encode_plus(lines, add_special_tokens=add_special_tokens, max_length=max_length,truncation=True)["input_ids"]
-    return examples
-
-class DNASequenceDataset(Dataset):
-    def __init__(self, tokenizer: PreTrainedTokenizer, args, file_path: str, block_size=512):
-        self.tokenizer = tokenizer
-        assert os.path.isfile(file_path)
-        logger = logging.getLogger(__name__)
-        # Cached features file
-        directory, filename = os.path.split(file_path)
-        # print(directory, "\n", filename)
-        cached_features_file = os.path.join(
-            directory, args.model_type + "_cached_lm_" + str(block_size) + "_" + filename
-        )
-        # print(cached_features_file)
-        if os.path.exists(cached_features_file) and not args.overwrite_cache:
-            logger.info("Loading features from cached file %s", cached_features_file)
-            with open(cached_features_file, "rb") as handle:
-                self.examples = pickle.load(handle)
-        else:
-            logger.info("Creating features from dataset file at %s", file_path)
-
-            with open(file_path, encoding="utf-8") as f:
-                # Read DNA sequences from file, assuming one sequence per line
-                lines = [line.strip() for line in f if line.strip()]
-                # print(lines[:5])
-                lines = lines[:100]
-
-            # Tokenize DNA sequences
-            if args.n_process == 1:
-                self.examples = tokenizer.batch_encode_plus(lines, add_special_tokens=True,  truncation=True, max_length=block_size, )["input_ids"]
-                # print(self.examples)
-            else:
-                n_proc = args.n_process
-                p = Pool(n_proc)
-                indexes = [0]
-                len_slice = int(len(lines)/n_proc)
-                for i in range(1, n_proc+1):
-                    if i != n_proc:
-                        indexes.append(len_slice*(i))
-                    else:
-                        indexes.append(len(lines))
-                results = []
-                for i in range(n_proc):
-                    results.append(p.apply_async(convert_line_to_example,[tokenizer, lines[indexes[i]:indexes[i+1]], block_size,]))
-                    print(str(i) + " start")
-                p.close() 
-                p.join()
-
-                self.examples = []
-                for result in results:
-                    ids = result.get()
-                    self.examples.extend(ids)
-
-            logger.info("Saving features into cached file %s", cached_features_file)
-            with open(cached_features_file, "wb") as handle:
-                pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-    def __len__(self):
-        return len(self.examples)
-
-    def __getitem__(self, i):
-        sequence = self.examples[i]
-
-        # 检查序列是否为空，如果是，则返回一个填充的空序列
-        if not sequence:
-            return torch.tensor([self.tokenizer.pad_token_id], dtype=torch.long)
-
-        # 将每个 BPE 序列转换为张量
-        tensor_sequence = [torch.tensor(seq, dtype=torch.long) for seq in sequence]
-
-        # 检查 tensor_sequence 是否为空
-        if not tensor_sequence:
-            print(f"Empty tensor_sequence for index {i}")
-            return torch.tensor([self.tokenizer.pad_token_id], dtype=torch.long)
-
-        # 使用 pad_sequence 对列表进行填充
-        padded_sequence = pad_sequence(tensor_sequence, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-
-        return padded_sequence
 
     
 class DNADataset(Dataset):
@@ -236,27 +152,29 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 def compute_mlm_metrics(eval_preds):
     logits, labels = eval_preds.predictions, eval_preds.label_ids
     predictions = logits.argmax()
-    
-    # Mask positions where labels are -100 (i.e., padding tokens)
-    masked_positions = (labels != -100)
 
-    # Convert masked_positions to a PyTorch tensor
-    masked_positions = torch.tensor(masked_positions, dtype=torch.bool)
+    # Convert labels to a PyTorch tensor
+    labels = torch.tensor(labels, dtype=torch.long)
+    print("+"*20, "\n", labels)
+
+    # Mask positions where labels are -100 (i.e., padding tokens)
+    masked_positions = torch.where(labels != -100)
+    print("+"*20, "\n")
+    print("掩码：", masked_positions)
 
     # Print shapes for debugging
     print("logits shape:", logits.shape)
     print("labels shape:", labels.shape)
-    print("masked_positions shape:", masked_positions.shape)
-
-    # Ensure masked_positions is a boolean tensor
-    masked_positions = torch.nonzero(masked_positions, as_tuple=False).squeeze()
+    print("masked_positions shape:", masked_positions[0].shape)
 
     # Print additional information for debugging
-    print("Number of masked positions:", len(masked_positions))
-    print("Sample masked positions:", masked_positions[:10])  # Print the first 10 masked positions
+    print("Number of masked positions:", len(masked_positions[0]))
+    print("Sample masked positions:", masked_positions[0][:10])  # Print the first 10 masked positions
 
-    if len(masked_positions) == 0:
+    print("+"*20)
+    if len(masked_positions[0]) == 0:
         raise ValueError("No masked positions found. Check your data or masking logic.")
+    # 为什么这里检查的是masked_positions[0]的长度，感觉很奇怪啊
 
     # Calculate accuracy only for the masked positions
     try:
@@ -265,7 +183,7 @@ def compute_mlm_metrics(eval_preds):
         print("Error:", e)
         print("predictions shape:", predictions.shape)
         print("labels shape:", labels.shape)
-        print("masked_positions shape:", masked_positions.shape)
+        print("masked_positions shape:", masked_positions[0].shape)
         raise e
 
     # Calculate other metrics if needed
@@ -278,6 +196,7 @@ def compute_mlm_metrics(eval_preds):
 
 
 
+
 if __name__ == "__main__":
 
     model_args = ModelArguments()
@@ -285,11 +204,10 @@ if __name__ == "__main__":
     training_args = TrainingArguments(
         output_dir='../results',
         num_train_epochs=100,
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=1,
         logging_dir='../logs',
     )
 
-    # 初始化 DNASequenceDataset
     input_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-1.0.txt"
     print(f"load dataset from {input_file_path}")
     
@@ -305,7 +223,13 @@ if __name__ == "__main__":
     
     sequences = read_txt_file(input_file_path)
     tokenized_inputs = dna_tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
+    print("$"*20)
+    pprint(tokenized_inputs)
+    print("$"*20)
     dataset = DNADataset(tokenized_inputs)
+    print("$"*20)
+    pprint(dataset)
+    print("$"*20)
 
     # 划分数据集
     train_size = int(0.8 * len(dataset))
@@ -313,13 +237,16 @@ if __name__ == "__main__":
     train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
+    for batch in train_dataset:
+        print(batch)
+        inputs = batch["input_ids"]
+        # labels = batch["labels"]
+        print("Input:", dna_tokenizer.decode(inputs[0].tolist()))
+        # print("Labels:", dna_tokenizer.decode(labels[0].tolist()))
+        break  # 只输出一个 batch 的示例
+
 
     model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
-
-    # 打印模型结构
-    # print(model)
-
-    # 计算模型参数数量
     num_parameters = sum(p.numel() for p in model.parameters())
     print(f"Number of parameters: {num_parameters}")
     # 打印分词器信息
@@ -334,10 +261,6 @@ if __name__ == "__main__":
     compute_metrics=compute_mlm_metrics
     )
 
-    # 在训练循环中逐步加载数据
-    # for epoch in range(training_args.num_train_epochs):
-    #     for batch in DataLoader(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True):
-    #         trainer.train_batch(inputs=batch)  # 使用 train_batch 方法进行训练步骤
     trainer.train()
     # 评估模型
     accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, eval_dataset)
