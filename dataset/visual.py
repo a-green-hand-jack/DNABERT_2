@@ -1,58 +1,95 @@
 import pandas as pd
 from tqdm import tqdm
+import random
 
-dna_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
-print(f"load data from {dna_path}")
+def load_data(file_path):
+    """
+    Load DNA data from a CSV file.
 
-# 读取CSV文件
-df = pd.read_csv(dna_path)  # 替换为你的文件路径
+    Parameters:
+    - file_path (str): Path to the CSV file.
 
-# 显示数据集的前几行
-print(df.head())
+    Returns:
+    - pd.DataFrame: Loaded DataFrame.
+    """
+    print(f"Load data from {file_path}")
+    return pd.read_csv(file_path)
 
-# 显示DataFrame的形状
-print(f"Shape of the DataFrame: {df.shape}")
+def print_dataframe_info(dataframe):
+    """
+    Print information about the DataFrame.
 
-# 打印 'ID' 列的数据
-print("ID column:")
-print(df['ID'])
+    Parameters:
+    - dataframe (pd.DataFrame): Input DataFrame.
+    """
+    print(dataframe.head())
+    print(f"Shape of the DataFrame: {dataframe.shape}")
 
-# 打印 'Description' 列的数据
-print("\nDescription column:")
-print(df['Description'])
+def process_sequences(df):
+    """
+    Process DNA sequences from the DataFrame.
 
-# 打印 'Sequence' 列每一行的数据长度
-print("\nSequence column lengths:")
-for idx, sequence in enumerate(df['Sequence']):
-    sequence_length = len(sequence)
-    print(f"Row {idx + 1}: Length - {sequence_length}")
+    Parameters:
+    - df (pd.DataFrame): Input DataFrame with a 'Sequence' column.
 
-# 拼接 'Sequence' 列的每一行
-concatenated_sequence = ''.join(df['Sequence'])
+    Returns:
+    - str: Resulting processed text.
+    """
+    concatenated_sequence = ''.join(df['Sequence'])
 
-# 分隔每512个字符，每行包含512个字符，并且忽略含有15%以上N的部分
-split_sequences = []
-for i in tqdm(range(0, len(concatenated_sequence), 512), desc="Processing"):
-    sequence_chunk = concatenated_sequence[i:i + 512]
-    if sequence_chunk.count('N') / len(sequence_chunk) <= 0.15:
-        split_sequences.append(sequence_chunk)
+    split_sequences = []
+    for i in tqdm(range(0, len(concatenated_sequence), 512), desc="Processing"):
+        sequence_chunk = concatenated_sequence[i:i + 512]
+        if sequence_chunk.count('N') / len(sequence_chunk) <= 0.15:
+            split_sequences.append(sequence_chunk)
 
-# 将分隔后的序列用换行连接
-resulting_text = '\n'.join(split_sequences)
+    return '\n'.join(split_sequences)
 
-# 保存到txt文件
-output_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-with open(output_file_path, 'w') as file:
-    file.write(resulting_text)
+def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=0.1):
+    """
+    Save a randomly sampled portion of the resulting text to a TXT file.
 
-print(f"Resulting text saved to {output_file_path}")
+    Parameters:
+    - resulting_text (str): Processed text.
+    - output_path (str): Path to the output TXT file.
+    - sample_ratio (float): Proportion of the resulting text to randomly sample. Default is 0.1 (10%).
+
+    Returns:
+    - str: Sampled text.
+    """
+    total_lines = resulting_text.count('\n')
+    sample_size = int(total_lines * sample_ratio)
+
+    sampled_lines = random.sample(resulting_text.split('\n'), sample_size)
+    sampled_text = '\n'.join(sampled_lines)
+
+    with open(output_path, 'w') as file:
+        file.write(sampled_text)
+
+    print(f"Sampled text saved to {output_path} (Sample Ratio: {sample_ratio * 100}%)")
+    return sampled_text
 
 
-# 加载并读取txt文件
-with open(output_file_path, 'r') as file:
-    loaded_text = file.read()
+def main():
+    # Modify file paths as needed
+    csv_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
+    sample_ratio = 0.1
+    txt_output_path =f"../../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}.txt"
 
-# 打印txt文件的前5行
-print("\nLoaded text from TXT file - First 5 lines:")
-print(loaded_text[:512 * 5])
+    df = load_data(csv_file_path)
+    print_dataframe_info(df)
+
+    resulting_text = process_sequences(df)
+    save_resulting_text_with_sampling(resulting_text, txt_output_path, sample_ratio)
+
+    # Load and print the first 5 lines of the TXT file
+    with open(txt_output_path, 'r') as file:
+        loaded_text = file.read()
+
+    print("\nLoaded text from TXT file - First 5 lines:")
+    print(loaded_text[:512 * 5])
+
+if __name__ == "__main__":
+    main()
+
 

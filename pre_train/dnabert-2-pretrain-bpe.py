@@ -286,13 +286,13 @@ if __name__ == "__main__":
 
     training_args = TrainingArguments(
         output_dir='../results',
-        num_train_epochs=10,
+        num_train_epochs=100,
         per_device_train_batch_size=8,
         logging_dir='../logs',
     )
 
     # 初始化 DNASequenceDataset
-    input_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+    input_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002-10.0.txt"
     print(f"load dataset from {input_file_path}")
     
     dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -305,7 +305,7 @@ if __name__ == "__main__":
     )
     print(f"load tokenizer from {model_args.model_name_or_path}")
     
-    sequences = read_txt_file(input_file_path)[:100]
+    sequences = read_txt_file(input_file_path)
     tokenized_inputs = dna_tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
     dataset = DNADataset(tokenized_inputs)
 
