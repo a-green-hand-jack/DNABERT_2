@@ -45,7 +45,17 @@ def process_sequences(df):
 
     return '\n'.join(split_sequences)
 
-def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=0.1):
+
+def set_random_seed(seed):
+    """
+    Set the random seed for reproducibility.
+
+    Parameters:
+    - seed (int): Random seed value.
+    """
+    random.seed(seed)
+
+def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=0.1, random_seed=42):
     """
     Save a randomly sampled portion of the resulting text to a TXT file.
 
@@ -53,10 +63,14 @@ def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=
     - resulting_text (str): Processed text.
     - output_path (str): Path to the output TXT file.
     - sample_ratio (float): Proportion of the resulting text to randomly sample. Default is 0.1 (10%).
+    - random_seed (int): Random seed for reproducibility. Default is None.
 
     Returns:
     - str: Sampled text.
     """
+    if random_seed is not None:
+        set_random_seed(random_seed)
+
     total_lines = resulting_text.count('\n')
     sample_size = int(total_lines * sample_ratio)
 
@@ -66,15 +80,16 @@ def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=
     with open(output_path, 'w') as file:
         file.write(sampled_text)
 
-    print(f"Sampled text saved to {output_path} (Sample Ratio: {sample_ratio * 100}%)")
+    print(f"Sampled text saved to {output_path} (Sample Ratio: {sample_ratio * 100}%, Random Seed: {random_seed})")
     return sampled_text
+
 
 
 def main():
     # Modify file paths as needed
-    csv_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
-    sample_ratio = 0.1
-    txt_output_path =f"../../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}.txt"
+    csv_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
+    sample_ratio = 0.01
+    txt_output_path =f"../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}.txt"
 
     df = load_data(csv_file_path)
     print_dataframe_info(df)

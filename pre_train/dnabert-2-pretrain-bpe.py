@@ -3,7 +3,7 @@
 
 import torch 
 import transformers
-from transformers import AutoTokenizer, EvalPrediction
+from transformers import AutoTokenizer, EvalPrediction, PreTrainedTokenizer
 from torch.utils.data import Dataset, DataLoader
 from transformers import DataCollatorForLanguageModeling
 from transformers import BertForMaskedLM, Trainer, TrainingArguments, EvalPrediction
@@ -19,6 +19,7 @@ import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Sequence, Tuple, List
 from multiprocessing import Pool
+import pickle
 
 import torch
 import transformers
@@ -73,11 +74,11 @@ class TrainingArguments(transformers.TrainingArguments):
     save_steps: int = field(default=500)
     eval_steps: int = field(default=500)
     evaluation_strategy: str = field(default="steps")
-    load_best_model_at_end: bool = field(default=True)     # load the best model when finished training (default metric is loss)
-    metric_for_best_model: str = field(default="matthews_correlation") # the metric to use to compare models
-    greater_is_better: bool = field(default=True)           # whether the `metric_for_best_model` should be maximized or not
-    logging_strategy: str = field(default="steps")  # Log every "steps"
-    logging_steps: int = field(default=100)  # Log every 100 steps
+    load_best_model_at_end: bool = field(default=True)     
+    metric_for_best_model: str = field(default="matthews_correlation")
+    greater_is_better: bool = field(default=True)           
+    logging_strategy: str = field(default="steps")
+    logging_steps: int = field(default=100)
     warmup_steps: int = field(default=50)
     weight_decay: float = field(default=0.01)
     learning_rate: float = field(default=1e-4)
@@ -91,11 +92,8 @@ class TrainingArguments(transformers.TrainingArguments):
     save_model: bool = field(default=False)
     seed: int = field(default=42)
 
-from torch.utils.data import Dataset
-from transformers import PreTrainedTokenizer
-import os
-import pickle
-import torch
+
+
 
 def convert_line_to_example(tokenizer, lines, max_length, add_special_tokens=True):
     examples = tokenizer.batch_encode_plus(lines, add_special_tokens=add_special_tokens, max_length=max_length,truncation=True)["input_ids"]
@@ -237,7 +235,7 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 
 def compute_mlm_metrics(eval_preds):
     logits, labels = eval_preds.predictions, eval_preds.label_ids
-    predictions = logits.argmax(dim=-1)
+    predictions = logits.argmax()
     
     # Mask positions where labels are -100 (i.e., padding tokens)
     masked_positions = (labels != -100)
@@ -292,7 +290,7 @@ if __name__ == "__main__":
     )
 
     # 初始化 DNASequenceDataset
-    input_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002-10.0.txt"
+    input_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-1.0.txt"
     print(f"load dataset from {input_file_path}")
     
     dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
