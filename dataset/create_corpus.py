@@ -204,6 +204,6 @@ if __name__ == "__main__":
 
     """
     在这里给出一个实例：
-    python create_corpus.py --input-file "../../Datasets/Human_genome/huixin/GRCh38.p14.genome.fa.gz" --output-dir "../../Datasets/Human_genome/huixin/create_corpus_norc" --rc "no_rc"   
+    python create_corpus.py --input-file "../../Datasets/Human_genome/huixin/GRCh38.p14.genome.fa.gz" --output-dir "../../Datasets/Human_genome/huixin/create_corpus_norc" --rc-flag "no_rc"   
     """
     cli()

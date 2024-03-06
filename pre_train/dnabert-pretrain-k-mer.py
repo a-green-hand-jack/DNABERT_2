@@ -1,23 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-import os
-import random
-from typing import Optional, Dict, Sequence, Tuple, List, Union, Any
-import pdb
-
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset, DataLoader, IterableDataset, ConcatDataset
-from tqdm import tqdm
-
-from sklearn.metrics import (
-    confusion_matrix,
-    accuracy_score,
-    precision_recall_fscore_support
-)
-
 import transformers
 from transformers import (
     AutoTokenizer,
@@ -33,13 +13,25 @@ from transformers import (
     BertForPreTraining, 
     BertTokenizerFast
 )
- 
-from datasets import load_dataset
-from tokenizers import Tokenizer
+from transformers.modeling_utils import PreTrainedModel, load_sharded_checkpoint, unwrap_model
+# from transformers.trainer_pt_utils import LabelSmoother
+from tokenizers import Tokenizer, models, pre_tokenizers
+from typing import Optional, Dict, Sequence, Tuple, List, Union, Any
+import torch
+import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Dataset, DataLoader, IterableDataset, ConcatDataset
+import dataclasses
 from dataclasses import dataclass, field
+import os
+from pathlib import Path
+from sklearn.metrics import (
+    confusion_matrix,
+    accuracy_score,
+    precision_recall_fscore_support
+)
+import random
 
-from multiprocessing import Pool
-import pickle
 class LineByLineTextDataset(Dataset):
     def __init__(self, file_path: str , high_tokenizer: PreTrainedTokenizer, low_tokenizer: PreTrainedTokenizer, high_len:int, low_len:int,):
         """
@@ -224,6 +216,20 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels, attention_mask
 
+
+
+@dataclass
+class ModelArguments:
+    model_type: Optional[str] = field(default="dnabert")
+    n_process: int = field(default=1, metadata={"help":"none"})
+    overwrite_cache: bool = False
+    model_name_or_path: Optional[str] = field(default="../zhihan1996/DNABERT-2-117M")
+    use_lora: bool = field(default=False, metadata={"help": "whether to use LoRA"})
+    lora_r: int = field(default=8, metadata={"help": "hidden dimension for LoRA"})
+    lora_alpha: int = field(default=32, metadata={"help": "alpha for LoRA"})
+    lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
+    lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
+    
 class MLMNetwork(nn.Module):
     def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
         super(MLMNetwork, self).__init__()
@@ -256,6 +262,153 @@ class MLMNetwork(nn.Module):
         """
         return next(self.parameters()).device
     
+@dataclass
+class LabelSmoother:
+    """
+    Adds label-smoothing on a pre-computed output from a Transformers model.
+
+    Args:
+        epsilon (`float`, *optional*, defaults to 0.1):
+            The label smoothing factor.
+        ignore_index (`int`, *optional*, defaults to -100):
+            The index in the labels to ignore when computing the loss.
+    """
+
+    epsilon: float = 0.1
+    ignore_index: int = -100
+
+    def __call__(self, model_output, labels, shift_labels=False):
+        logits = model_output["prediction_logits"] if isinstance(model_output, dict) else model_output[0]
+        if shift_labels:
+            logits = logits[..., :-1, :].contiguous()
+            labels = labels[..., 1:].contiguous()
+
+        log_probs = -nn.functional.log_softmax(logits, dim=-1)
+        if labels.dim() == log_probs.dim() - 1:
+            labels = labels.unsqueeze(-1)
+
+        padding_mask = labels.eq(self.ignore_index)
+        # In case the ignore_index is -100, the gather will fail, so we replace labels by 0. The padding_mask
+        # will ignore them in any case.
+        labels = torch.clamp(labels, min=0)
+        nll_loss = log_probs.gather(dim=-1, index=labels)
+        # works for fp16 input tensor too, by internally upcasting it to fp32
+        smoothed_loss = log_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
+
+        nll_loss.masked_fill_(padding_mask, 0.0)
+        smoothed_loss.masked_fill_(padding_mask, 0.0)
+
+        # Take the mean over the label dimensions, then divide by the number of active elements (i.e. not-padded):
+        num_active_elements = padding_mask.numel() - padding_mask.long().sum()
+        nll_loss = nll_loss.sum() / num_active_elements
+        smoothed_loss = smoothed_loss.sum() / (num_active_elements * log_probs.shape[-1])
+        return (1 - self.epsilon) * nll_loss + self.epsilon * smoothed_loss
+
+class MyTrainer(Trainer):
+    
+    
+    def compute_loss(self, model, inputs, return_outputs=False):
+        self.label_smoother = LabelSmoother(epsilon=self.args.label_smoothing_factor)
+        # 检查是否存在labels键
+        if "labels" in inputs:
+            labels = inputs.pop("labels")  # 从inputs中移除labels并保存
+        else:
+            labels = None
+        
+        # 使用模型处理inputs并获取输出
+        outputs = model(**inputs)
+
+        # 如果存在labels，则根据任务类型调用损失平滑器来计算损失
+        if labels is not None:
+            loss = self.label_smoother(outputs, labels)
+        # 如果不存在labels，则直接从模型输出中获取损失
+        else:
+            # 从outputs中获取损失
+            loss = outputs.loss if isinstance(outputs, dict) else outputs[0]
+        
+        # 返回损失和outputs（如果需要）
+        return (loss, outputs) if return_outputs else loss
+
+
+def compute_mlm_metrics(p):
+    """
+    Compute metrics for masked language model predictions.
+
+    Args:
+        p: Prediction object containing predictions and labels.
+
+    Returns:
+        dict: Dictionary containing accuracy, precision, recall, and F1 score.
+    """
+    predictions = p.predictions.argmax(axis=2)  # Choose the label with the highest probability
+    labels = p.label_ids
+
+    # Calculate accuracy
+    accuracy = accuracy_score(labels.flatten(), predictions.flatten())
+
+    # Calculate precision, recall, and F1 score
+    precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
+
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
+
+def print_tokenizer_features(tokenizer):
+    # 打印特殊token及其对应的id
+    print("Special tokens:")
+    print(f"Pad token: {tokenizer.pad_token_id}, {tokenizer.pad_token}")
+    print(f"CLS token: {tokenizer.cls_token_id}, {tokenizer.cls_token}")
+    print(f"UNK token: {tokenizer.unk_token_id}, {tokenizer.unk_token}")
+    print(f"Mask token: {tokenizer.mask_token_id}, {tokenizer.mask_token}")
+    print(f"SEP token: {tokenizer.sep_token_id}, {tokenizer.sep_token}")
+    vocab_size = len(tokenizer)
+    # 打印词汇表大小
+    print("词汇表大小:", vocab_size)
+
+    # 计算字典中token对应的最大长度和最小长度、平均长度
+    max_token_len = max(len(token) for token in tokenizer.get_vocab().keys())
+    min_token_len = min(len(token) for token in tokenizer.get_vocab().keys())
+    avg_token_len = sum(len(token) for token in tokenizer.get_vocab().keys()) / vocab_size
+    print(f"Maximum token length: {max_token_len}")
+    print(f"Minimum token length: {min_token_len}")
+    print(f"Average token length: {avg_token_len}")
+    
+    
+
+def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_samples=3):
+    
+
+    # 随机选择num_samples个样本
+    sample_indices = random.sample(range(len(dataset)), num_samples)
+    print("Randomly selected samples:")
+    # 打印模型结构
+    print("Show the strucature of the model")
+    print(model)
+    # 打印嵌入层维度
+    embedding_dimension = model.config.hidden_size
+    print("model's embedding dimemsion:", embedding_dimension)
+    
+
+    for i, idx in enumerate(sample_indices):
+        sample = dataset[idx]
+
+        # 打印原始数据
+        print(f"\nSample {i + 1}:")
+        print("Original data:", sample)
+
+        # 使用data collator处理数据
+        processed_data = data_collator([sample])
+
+        # 打印处理后的数据
+        print("Processed data:", processed_data)
+
+        # 解码处理后的数据
+        decoded_text = tokenizer.batch_decode(processed_data['input_ids'], skip_special_tokens=True)
+
+        # 打印解码后的文本
+        print("Decoded text:", decoded_text)
+        
+        # 打印model的输出
+        output = model(**processed_data)
+        print("Out put of the model", output)
 
 def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: int = 42) -> Tuple[str, str]:
     """
@@ -285,8 +438,17 @@ def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: 
     # Split the lines into train and eval sets
     train_lines = lines[:split_index]
     eval_lines = lines[split_index:]
-    print(f"Length of bases in the training set: {len(train_lines) * 512}")
-    print(f"Length of bases in the evaluation set: {len(eval_lines) * 512}")
+    # Calculate the total number of characters in a single line
+    # Assuming all lines have the same number of characters
+    num_chars_per_line = len(lines[0].strip())
+
+    # Calculate the total number of characters in the training and evaluation sets
+    train_num_chars = sum(len(line.strip()) for line in train_lines)
+    eval_num_chars = sum(len(line.strip()) for line in eval_lines)
+
+    print(f"Total number of characters in a single line: {num_chars_per_line}")
+    print(f"Total number of characters in the training set: {train_num_chars}")
+    print(f"Total number of characters in the evaluation set: {eval_num_chars}")
 
     # Define output file paths
     train_file_path = os.path.join(os.path.dirname(input_file_path), 'train.txt')
@@ -304,72 +466,6 @@ def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: 
 
     return train_file_path, eval_file_path
 
-
-def evaluate_mlm(model, data_collator, eval_dataset):
-    """
-    Evaluate the masked language model on the evaluation dataset.
-
-    Args:
-        model: The masked language model to evaluate.
-        data_collator: Data collator for processing batches.
-        eval_dataset: Evaluation dataset for evaluation.
-
-    Returns:
-        accuracy: Accuracy of the model on the evaluation dataset.
-        perplexity: Perplexity of the model on the evaluation dataset.
-    """
-    model.eval()
-    eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=data_collator)
-
-    total_accuracy = 0
-    total_loss = 0
-    total_examples = 0
-
-    for batch in eval_dataloader:
-        with torch.no_grad():
-            outputs = model(**{k: v.to(model.device) for k, v in batch.items()})
-            predictions = torch.argmax(outputs.logits, dim=-1)
-            labels = batch['labels'].to(model.device)
-            mask = labels != -100  # Only consider masked tokens for accuracy
-
-            # Accuracy
-            correct_predictions = (predictions == labels) & mask
-            total_accuracy += correct_predictions.sum().item()
-            total_examples += mask.sum().item()
-
-            # Loss for perplexity
-            loss = outputs.loss
-            total_loss += loss.item() * batch['input_ids'].shape[0]  # Multiply by batch size
-
-    # Calculate metrics
-    accuracy = total_accuracy / total_examples
-    perplexity = torch.exp(torch.tensor(total_loss / len(eval_dataset)))
-
-    return accuracy, perplexity.item()
-
-
-def compute_mlm_metrics(p):
-    """
-    Compute metrics for masked language model predictions.
-
-    Args:
-        p: Prediction object containing predictions and labels.
-
-    Returns:
-        dict: Dictionary containing accuracy, precision, recall, and F1 score.
-    """
-    predictions = p.predictions.argmax(axis=2)  # Choose the label with the highest probability
-    labels = p.label_ids
-
-    # Calculate accuracy
-    accuracy = accuracy_score(labels.flatten(), predictions.flatten())
-
-    # Calculate precision, recall, and F1 score
-    precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
-
-    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
-
-
 def load_and_convert_tokenizer(load_path: str) -> PreTrainedTokenizerFast:
     """
     Load a tokenizer from a file and convert it to a PreTrainedTokenizerFast object.
@@ -384,112 +480,72 @@ def load_and_convert_tokenizer(load_path: str) -> PreTrainedTokenizerFast:
     print(f"load tokenize's vocab.txt from {load_path}")
     tokenizer = BertTokenizer(vocab_file=load_path, do_lower_case=False) # 注意，这里一定要规定`do_lower_case=False`!!!!!
     # print(new_tokenizer.mask_token)
-
+    
     
     return tokenizer
 
-@dataclass
-class ModelArguments:
-    model_type: Optional[str] = field(default="dnabert")
-    n_process: int = field(default=1, metadata={"help":"none"})
-    overwrite_cache: bool = False
-    model_name_or_path: Optional[str] = field(default="../zhihan1996/DNABERT-2-117M")
-    use_lora: bool = field(default=False, metadata={"help": "whether to use LoRA"})
-    lora_r: int = field(default=8, metadata={"help": "hidden dimension for LoRA"})
-    lora_alpha: int = field(default=32, metadata={"help": "alpha for LoRA"})
-    lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
-    lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
-        
-@dataclass
-class TrainingArguments(transformers.TrainingArguments):
-    cache_dir: Optional[str] = field(default=None)
-    run_name: str = field(default="run")
-    optim: str = field(default="adamw_torch")
-    model_max_length: int = field(default=512, metadata={"help": "Maximum sequence length."})
-    gradient_accumulation_steps: int = field(default=1)
-    per_device_train_batch_size: int = field(default=8)
-    per_device_eval_batch_size: int = field(default=16)
-    num_train_epochs: int = field(default=1000)
-    fp16: bool = field(default=False)
-    logging_steps: int = field(default=100)
-    save_steps: int = field(default=500)
-    eval_steps: int = field(default=500)
-    evaluation_strategy: str = field(default="steps")
-    load_best_model_at_end: bool = field(default=True)     # load the best model when finished training (default metric is loss)
-    # metric_for_best_model: str = field(default="matthews_correlation") # the metric to use to compare models
-    greater_is_better: bool = field(default=True)           # whether the `metric_for_best_model` should be maximized or not
-    logging_strategy: str = field(default="steps")  # Log every "steps"
-    logging_steps: int = field(default=100)  # Log every 100 steps
-    warmup_steps: int = field(default=50)
-    weight_decay: float = field(default=0.01)
-    learning_rate: float = field(default=1e-4)
-    save_total_limit: int = field(default=50)
-    load_best_model_at_end: bool = field(default=True)
-    output_dir: str = field(default="/common/zhanh/cardioNet/output")
-    find_unused_parameters: bool = field(default=False)
-    checkpointing: bool = field(default=False)
-    dataloader_pin_memory: bool = field(default=False)
-    eval_and_save_results: bool = field(default=True)
-    save_model: bool = field(default=False)
-    seed: int = field(default=42)
+import argparse
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train DNA BERT model")
 
+    parser.add_argument("--high_model_path", type=str, default="../tokenizer/dnabert-config/bert-config-6/vocab.txt",
+                        help="Path to the high-level tokenizer vocabulary file")
+    parser.add_argument("--low_model_path", type=str, default="../tokenizer/dnabert-config/bert-config-3/vocab.txt",
+                        help="Path to the low-level tokenizer vocabulary file")
+    parser.add_argument("--model_path", type=str, default="../tokenizer/dnabert-config/high-low-63-vocab.txt",
+                        help="Path to the DNA tokenizer vocabulary file")
+    parser.add_argument("--data_path", type=str, default="../../Datasets/Human_genome/huixin/24_chromosomes-002.txt",
+                        help="Path to the DNA dataset text file")
+    parser.add_argument("--output_dir", type=str, default="./dnabert_6/results",
+                        help="Output directory for training results")
+    parser.add_argument("--logging_dir", type=str, default="./dnabert_6/logs",
+                        help="Logging directory for training logs")
+    parser.add_argument("--num_train_epochs", type=int, default=2,
+                        help="Number of training epochs")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2,
+                        help="Training batch size per device")
 
-    
+    args = parser.parse_args()
+    return args
+
 if __name__ == "__main__":
-
-    
-    batch_size = 2
-    training_args = TrainingArguments(
-        output_dir='./dnabert_6/results',
-        num_train_epochs=2,
-        per_device_train_batch_size=batch_size,
-        logging_dir='./dnabert_6/logs',
-    )
+    args = parse_args()
 
     # 加载自己的tokenizer
-    high_model_name_or_path = "../tokenizer/dnabert-config/bert-config-6/vocab.txt"
-    high_dna_tokenizer = load_and_convert_tokenizer(high_model_name_or_path)
-    low_model_name_or_path = "../tokenizer/dnabert-config/bert-config-3/vocab.txt"
-    low_dna_tokenizer = load_and_convert_tokenizer(low_model_name_or_path)
-    model_name_or_path = "../tokenizer/dnabert-config/high-low-63-vocab.txt"
-    dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
-    # data_collator = DataCollatorForMLM(high_low_tokenizers=(high_dna_tokenizer, low_dna_tokenizer))
-    print(dna_tokenizer.pad_token_id)
-    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
-    
-    # pdb.set_trace()  # 设置断点
+    high_dna_tokenizer = load_and_convert_tokenizer(args.high_model_path)
+    low_dna_tokenizer = load_and_convert_tokenizer(args.low_model_path)
+    dna_tokenizer = load_and_convert_tokenizer(args.model_path)
+    print_tokenizer_features(dna_tokenizer)
 
-    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-    train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
+    # 加载DNA 数据集
+    train_file_path, eval_file_path = split_txt_file(args.data_path, split_ratio=0.8, random_seed=42)
     dna_train_dataset = LineByLineTextDataset(file_path=train_file_path, high_len=6, low_len=3, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer)
     dna_eval_dataset = LineByLineTextDataset(file_path=eval_file_path, high_len=6, low_len=3, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer)
 
-    # 加载model
-    # model_args = ModelArguments(model_name_or_path="../zhihan1996/DNA_bert_6")
-    # model_args = ModelArguments()
+    # 使用 data_collator 处理数据
+    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
+    # 使用示例
+    
     model = BertForPreTraining.from_pretrained("bert-base-uncased")
-    # Initialize BERT model and tokenizer
-    # model = BertForPreTraining.from_pretrained('bert-base-uncased')
-    # model_tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased', tokenizer_object=dna_tokenizer)
-    # data_collator = DataCollatorForMLM(tokenizer=model_tokenizer)
-
+    print_processed_data_samples(dna_train_dataset, data_collator, dna_tokenizer, model)
 
     # 开始训练
-    trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=dna_train_dataset,
-    data_collator=data_collator,
-    eval_dataset=dna_eval_dataset,
-    compute_metrics=compute_mlm_metrics
+    training_args = TrainingArguments(
+        output_dir=args.output_dir,
+        num_train_epochs=args.num_train_epochs,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        logging_dir=args.logging_dir,
+    )
+    trainer = MyTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=dna_train_dataset,
+        data_collator=data_collator,
+        eval_dataset=dna_eval_dataset,
+        compute_metrics=compute_mlm_metrics
     )
     trainer.train()
-
-    # # 评估模型
-    accuracy, perplexity = evaluate_mlm(model, data_collator, dna_eval_dataset)
-    print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
-    print(f"Perplexity: {perplexity:.4f}")
 
 
 
