@@ -140,14 +140,32 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 
     return accuracy, perplexity.item()
 
-from datasets import load_metric
-def compute_metrics(eval_preds):
-    metric = load_metric("glue", "mrpc", trust_remote_code=True)
+
+def compute_mlm_metrics(eval_preds):
     logits, labels = eval_preds.predictions, eval_preds.label_ids
-    # 上一行可以直接简写成：
-    # logits, labels = eval_preds  因为它相当于一个tuple
-    predictions = np.argmax(logits, axis=-1)
-    return metric.compute(predictions=predictions, references=labels)
+    predictions = logits.argmax(dim=-1)
+    
+    # Mask positions where labels are -100 (i.e., padding tokens)
+    masked_positions = (labels != -100)
+
+    # Calculate accuracy only for the masked positions
+    masked_accuracy = (predictions[masked_positions] == labels[masked_positions]).float().mean().item()
+
+    # Calculate perplexity using cross-entropy loss
+    loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
+    loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1)).view(logits.size())
+
+    # Mask out padding positions
+    loss = loss * (masked_positions.float())
+
+    # Calculate perplexity for the masked positions
+    masked_perplexity = torch.exp(loss.sum() / masked_positions.float().sum()).item()
+
+    return {
+        'masked_accuracy': masked_accuracy,
+        'masked_perplexity': masked_perplexity,
+    }
+
 
 
 if __name__ == "__main__":
@@ -159,45 +177,32 @@ if __name__ == "__main__":
         num_train_epochs=100,
         per_device_train_batch_size=8,
         logging_dir='./logs',
-    )    
+    )
 
-    #tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+    # tokenizer初始化移到训练循环内
     tokenizer = transformers.AutoTokenizer.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            model_max_length=training_args.model_max_length,
-            padding_side="right",
-            use_fast=True,
-            trust_remote_code=True,
-        )
-    
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=True,
+        trust_remote_code=True,
+    )
 
-    input_file_path = "../Dataset/Human_genome/huixin/24_chromosomes-002.txt"
+    input_file_path = "../../Dataset/Human_genome/huixin/24_chromosomes-002.txt"
     sequences = read_txt_file(input_file_path)
 
-    # print("首先检查长度")
-    # print(len(sequences))
-    # # 打印前10个元素
-    # print("选择1个元素打印出来:")
-    # begin_index = 100
-    # print(sequences[begin_index:begin_index + 1])
-    
+    dataset = DNADataset(sequences)  # 你可能需要根据你的 DNADataset 类的实现进行修改
 
-    # For demonstration, let's treat each nucleotide as a separate 'word' (highly simplified)
-    tokenized_inputs = tokenizer(sequences[:100], padding=True, truncation=True, max_length=512, return_tensors="pt")
-
-    dataset = DNADataset(tokenized_inputs)
+    # 划分数据集
     train_size = int(0.8 * len(dataset))
-
     eval_size = len(dataset) - train_size
     train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
-    print(train_dataset)
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True, mlm_probability=0.15)
 
-    model = MLMNetwork(model_name_or_path= model_args.model_name_or_path)
+    model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
 
-    
     # 打印模型结构
     # print(model)
 
@@ -213,13 +218,19 @@ if __name__ == "__main__":
         train_dataset=train_dataset,
         data_collator=data_collator,
         eval_dataset=eval_dataset,
-        compute_metrics=compute_metrics 
+        compute_metrics=compute_mlm_metrics
     )
 
+    # 在训练循环中逐步加载数据
+    for epoch in range(training_args.num_train_epochs):
+        for batch in DataLoader(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True):
+            tokenized_inputs = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt")
+            trainer.train_step(model_inputs=tokenized_inputs)
 
-    trainer.train()
+    # 评估模型
     accuracy, perplexity = evaluate_mlm(model, tokenizer, data_collator, eval_dataset)
 
     print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
     print(f"Perplexity: {perplexity:.4f}")
+
 
