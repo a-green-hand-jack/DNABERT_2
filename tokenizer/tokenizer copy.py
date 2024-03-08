@@ -1,12 +1,24 @@
 from tokenizers import (
+    decoders,
     models,
     pre_tokenizers,
+    processors,
     trainers,
     Tokenizer,
 )
-
+import random
 import os
 from tqdm import tqdm
+
+def read_txt_file(file_path):
+    with open(file_path, 'r') as file:
+        content = file.read()
+        sequence_list = content.split()
+    return sequence_list
+
+def get_training_corpus(dataset, chunk_size=1000):
+    for i in range(0, len(dataset), chunk_size):
+        yield dataset[i : i + chunk_size]
 
 def split_large_file(input_file, output_dir, chunk_size:int =100000000):
     print(f"开始分隔文件{input_file}，并且保存临时文件夹{output_dir}")
@@ -36,6 +48,7 @@ def train_tokenizer(tokenizer, lines, trainer, report_interval=10000):
         tokenizer.train_from_iterator(chunk, trainer=trainer)
 
 def train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer, report_interval=10000):
+    total_lines = sum(1 for file_name in os.listdir(chunks_dir) if file_name.endswith(".txt"))
     line_count = 0
 
     for file_name in tqdm(os.listdir(chunks_dir), desc="Processing Files", unit="file"):
@@ -57,7 +70,6 @@ def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002
          save_json_path:str = "./save_json/24_chromosomes-002.json",
          special_tokens = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"],
          vocab_size:int = 2 ** 12,
-         random_seed:int = 42,
          chunk_size:int = 10000000):
     # 初始化
     tokenizer = Tokenizer(models.BPE())
@@ -65,6 +77,9 @@ def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002
     # pre-tokenization
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
 
+    # 加载数据集
+    
+    # dataset = read_txt_file(data_path)
     # 训练分词器
     print(f"增加的特殊token有：{special_tokens}")
     print(f"增加了一下指导性设定：字典的大小：{vocab_size}")
@@ -80,10 +95,11 @@ def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002
     # 训练分词器
     chunks_dir = output_dir
     train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer)
+    # train_tokenizer(tokenizer, data_path, trainer, chunk_size)
     # 保存tokenizer在本地
     save_tokenizer(tokenizer, save_json_path)
     
-    os.remove(f"{output_dir}")
+    os.remove(f"{output_dir}/.txt")
 
 if __name__ == "__main__":
     main()
