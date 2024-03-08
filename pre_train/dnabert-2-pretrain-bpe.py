@@ -237,7 +237,7 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 
 def compute_mlm_metrics(eval_preds):
     logits, labels = eval_preds.predictions, eval_preds.label_ids
-    predictions = logits.argmax(dim=-1)
+    predictions = logits.argmax()
     
     # Mask positions where labels are -100 (i.e., padding tokens)
     masked_positions = (labels != -100)
@@ -292,7 +292,7 @@ if __name__ == "__main__":
     )
 
     # 初始化 DNASequenceDataset
-    input_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002-10.0.txt"
+    input_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-0.01.txt"
     print(f"load dataset from {input_file_path}")
     
     dna_tokenizer = transformers.AutoTokenizer.from_pretrained(

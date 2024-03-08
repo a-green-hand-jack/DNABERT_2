@@ -2,29 +2,6 @@ import pandas as pd
 from tqdm import tqdm
 import random
 
-def load_data(file_path):
-    """
-    Load DNA data from a CSV file.
-
-    Parameters:
-    - file_path (str): Path to the CSV file.
-
-    Returns:
-    - pd.DataFrame: Loaded DataFrame.
-    """
-    print(f"Load data from {file_path}")
-    return pd.read_csv(file_path)
-
-def print_dataframe_info(dataframe):
-    """
-    Print information about the DataFrame.
-
-    Parameters:
-    - dataframe (pd.DataFrame): Input DataFrame.
-    """
-    print(dataframe.head())
-    print(f"Shape of the DataFrame: {dataframe.shape}")
-
 def process_sequences(df):
     """
     Process DNA sequences from the DataFrame.
@@ -45,49 +22,32 @@ def process_sequences(df):
 
     return '\n'.join(split_sequences)
 
-def save_resulting_text_with_sampling(resulting_text, output_path, sample_ratio=0.1):
-    """
-    Save a randomly sampled portion of the resulting text to a TXT file.
+def process_and_save_file(input_path, output_path):
+    with open(input_path, 'r') as input_file:
+        lines = input_file.readlines()
 
-    Parameters:
-    - resulting_text (str): Processed text.
-    - output_path (str): Path to the output TXT file.
-    - sample_ratio (float): Proportion of the resulting text to randomly sample. Default is 0.1 (10%).
+    # Filter lines based on the condition (less than 15% 'N' characters)
+    filtered_lines = [line for line in lines if (line.count('N') / len(line)) <= 0.15]
 
-    Returns:
-    - str: Sampled text.
-    """
-    total_lines = resulting_text.count('\n')
-    sample_size = int(total_lines * sample_ratio)
-
-    sampled_lines = random.sample(resulting_text.split('\n'), sample_size)
-    sampled_text = '\n'.join(sampled_lines)
-
-    with open(output_path, 'w') as file:
-        file.write(sampled_text)
-
-    print(f"Sampled text saved to {output_path} (Sample Ratio: {sample_ratio * 100}%)")
-    return sampled_text
+    with open(output_path, 'w') as output_file:
+        output_file.writelines(filtered_lines)
 
 
 def main():
     # Modify file paths as needed
-    csv_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
-    sample_ratio = 0.1
-    txt_output_path =f"../../../Datasets/Human_genome/huixin/24_chromosomes-002-{sample_ratio*100}.txt"
+    csv_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
+    txt_output_path =f"../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
 
-    df = load_data(csv_file_path)
-    print_dataframe_info(df)
+    dataframe = pd.read_csv(csv_file_path)
+    print(dataframe.head())
+    print(f"Shape of the DataFrame: {dataframe.shape}")
 
-    resulting_text = process_sequences(df)
-    save_resulting_text_with_sampling(resulting_text, txt_output_path, sample_ratio)
+    resulting_text = process_sequences(dataframe)
+    with open(txt_output_path, 'w') as file:
+        file.write(resulting_text)
 
-    # Load and print the first 5 lines of the TXT file
-    with open(txt_output_path, 'r') as file:
-        loaded_text = file.read()
-
-    print("\nLoaded text from TXT file - First 5 lines:")
-    print(loaded_text[:512 * 5])
+    output_file_path = f"../../Datasets/Human_genome/huixin/24_chromosomes-002-clean.txt"
+    process_and_save_file(txt_output_path, output_file_path)
 
 if __name__ == "__main__":
     main()
