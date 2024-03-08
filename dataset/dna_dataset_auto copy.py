@@ -46,25 +46,30 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
 print("="*10, "这里打印分词之后的情况", "="*10)
 print(tokenized_sequences[:5])
 
-# 将分词后的序列转换为字典的列表
-# tokenized_data = [{"input_ids": seq.ids} for seq in tokenized_sequences]
+# 加载预训练的DNA tokenizer
+dna_tokenizer = AutoTokenizer.from_pretrained("dna_tokenizer_model_name")
 
-# 将转换后的数据封装为Dataset
-# tokenized_dataset = Dataset.from_dict(tokenized_data)
-dataset = DNADataset(tokenized_sequences)
+# 将分词后的序列转换为字典的列表，并添加mask标记
+tokenized_data = [{"input_ids": seq.ids, "attention_mask": seq.attention_mask, "labels": [-100 if x == 0 else x for x in seq.ids]} for seq in tokenized_sequences]
 
-# 将分词后的序列封装为一个Dataset
-# tokenized_dataset = Dataset.from_dict({"input_ids": tokenized_sequences})
+# 创建MLMDataset类
+class MLMDataset(Dataset):
+    def __init__(self, encodings):
+        self.encodings = encodings
 
-# 定义padding和mask规则
-# data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-print("="*10, "data_collator的情况", "="*10)
-data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True, mlm_probability=0.15)
-print(data_collator)
+    def __len__(self):
+        return len(self.encodings['input_ids'])
 
-# 对数据集进行padding和mask处理
-# padded_dataset = data_collator(tokenized_dataset)
+    def __getitem__(self, idx):
+        return {key: val[idx] for key, val in self.encodings.items()}
+
+# 使用DataCollatorForLanguageModeling对数据集进行padding和mask处理
+data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
+padded_dataset = data_collator(tokenized_data)
+
+# 封装为MLMDataset
+mlm_dataset = MLMDataset(padded_dataset)
 
 # 打印处理后的数据集示例
 print("="*10, "padding和mask之后的情况", "="*10)
-# print(padded_dataset)
+print(mlm_dataset[:5])

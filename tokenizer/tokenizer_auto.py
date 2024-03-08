@@ -1,24 +1,13 @@
 from tokenizers import (
-    decoders,
     models,
     pre_tokenizers,
-    processors,
     trainers,
     Tokenizer,
 )
-import random
+
+from transformers import AutoTokenizer
 import os
 from tqdm import tqdm
-
-def read_txt_file(file_path):
-    with open(file_path, 'r') as file:
-        content = file.read()
-        sequence_list = content.split()
-    return sequence_list
-
-def get_training_corpus(dataset, chunk_size=1000):
-    for i in range(0, len(dataset), chunk_size):
-        yield dataset[i : i + chunk_size]
 
 def split_large_file(input_file, output_dir, chunk_size:int =100000000):
     print(f"开始分隔文件{input_file}，并且保存临时文件夹{output_dir}")
@@ -48,7 +37,6 @@ def train_tokenizer(tokenizer, lines, trainer, report_interval=10000):
         tokenizer.train_from_iterator(chunk, trainer=trainer)
 
 def train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer, report_interval=10000):
-    total_lines = sum(1 for file_name in os.listdir(chunks_dir) if file_name.endswith(".txt"))
     line_count = 0
 
     for file_name in tqdm(os.listdir(chunks_dir), desc="Processing Files", unit="file"):
@@ -59,15 +47,17 @@ def train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer, report_interval=10
                 train_tokenizer(tokenizer, lines, trainer=trainer, report_interval=report_interval)
                 line_count += len(lines)
 
-def save_tokenizer(tokenizer, save_path):
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    tokenizer.save(save_path)
+def save_tokenizer(tokenizer, save_dir):
+    os.makedirs(save_dir, exist_ok=True)
+    tokenizer.model.save(save_dir)
 
 def load_tokenizer(file_path):
-    return Tokenizer.from_file(file_path)
+    tokenizer = Tokenizer(models.BPE())
+    tokenizer.model = models.BPE.from_file(file_path)
+    return tokenizer
 
-def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002-clean.txt",
-         save_json_path:str = "./save_json/24_chromosomes-002.json",
+def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002-1.0.txt",
+         save_dir:str = "./save_tokenizer",
          special_tokens = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"],
          vocab_size:int = 2 ** 12,
          chunk_size:int = 10000000):
@@ -77,9 +67,6 @@ def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002
     # pre-tokenization
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
 
-    # 加载数据集
-    
-    # dataset = read_txt_file(data_path)
     # 训练分词器
     print(f"增加的特殊token有：{special_tokens}")
     print(f"增加了一下指导性设定：字典的大小：{vocab_size}")
@@ -95,11 +82,19 @@ def main(data_path:str = "../..//Datasets/Human_genome/huixin/24_chromosomes-002
     # 训练分词器
     chunks_dir = output_dir
     train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer)
-    # train_tokenizer(tokenizer, data_path, trainer, chunk_size)
     # 保存tokenizer在本地
-    save_tokenizer(tokenizer, save_json_path)
-    
-    os.remove(f"{output_dir}/.txt")
+    # save_tokenizer(tokenizer, save_dir)
+    tokenizer.save_pretrained(save_dir)
+
+
+    # os.remove(f"{output_dir}")
+
+    # 保存为vocab.txt和merges.txt
+    # tokenizer.save(save_dir)
 
 if __name__ == "__main__":
     main()
+
+# 加载tokenizer
+tokenizer_path = './save_tokenizer'
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
