@@ -2,6 +2,23 @@ import pandas as pd
 from tqdm import tqdm
 import random
 
+def select_random_lines(input_file, output_file, ratio):
+    # 读取原始文件的所有行
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # 计算需要选择的行数
+    num_lines_to_select = int(len(lines) * ratio)
+
+    # 随机选择行
+    selected_lines = random.sample(lines, num_lines_to_select)
+
+    # 将选定的行写入新文件
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.writelines(selected_lines)
+
+
+
 def process_sequences(df):
     """
     Process DNA sequences from the DataFrame.
@@ -33,10 +50,7 @@ def process_and_save_file(input_path, output_path):
         output_file.writelines(filtered_lines)
 
 
-def main():
-    # Modify file paths as needed
-    csv_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
-    txt_output_path =f"../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+def main(csv_file_path:str = "", txt_output_path: str = ""):
 
     dataframe = pd.read_csv(csv_file_path)
     print(dataframe.head())
@@ -46,10 +60,15 @@ def main():
     with open(txt_output_path, 'w') as file:
         file.write(resulting_text)
 
-    output_file_path = f"../../Datasets/Human_genome/huixin/24_chromosomes-002-clean.txt"
-    process_and_save_file(txt_output_path, output_file_path)
+    # output_file_path = f"../../Datasets/Human_genome/huixin/24_chromosomes-002-clean.txt"
+    # process_and_save_file(txt_output_path, output_file_path)
 
 if __name__ == "__main__":
-    main()
+    csv_file_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
+    txt_output_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+    small_path = "../../../Datasets/Human_genome/huixin/24_chromosomes-002-small-train.txt"
 
+    # main(csv_file_path = csv_file_path, txt_output_path =txt_output_path)
+    # 示例用法：选择原文件的30%的行并保存到新文件
+    select_random_lines(txt_output_path, small_path, 0.0099)
 
