@@ -73,7 +73,7 @@ class TrainingArguments(transformers.TrainingArguments):
     checkpointing: bool = field(default=False)
     dataloader_pin_memory: bool = field(default=False)
     eval_and_save_results: bool = field(default=True)
-    save_model: bool = field(default=False)
+    save_model: bool = False
     seed: int = field(default=42)
 
 
@@ -122,22 +122,26 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
     return accuracy, perplexity.item()
 
 def compute_mlm_metrics(eval_preds):
-    logits, labels = eval_preds.predictions, eval_preds.label_ids
-    predictions = logits.argmax()
+    logits_np, labels_np = eval_preds.predictions, eval_preds.label_ids
+    # 将 NumPy 数组转为 PyTorch 张量
+    logits = torch.from_numpy(logits_np)
+    labels = torch.from_numpy(labels_np)
+    # predictions = logits.argmax()
+    predictions =torch.argmax(logits,dim=-1)
     
     # Mask positions where labels are -100 (i.e., padding tokens)
     masked_positions = (labels != -100)
 
     # Convert masked_positions to a PyTorch tensor
-    masked_positions = torch.tensor(masked_positions, dtype=torch.bool)
+    # masked_positions = torch.tensor(masked_positions, dtype=torch.bool)
 
     # Print shapes for debugging
-    print("logits shape:", logits.shape)
-    print("labels shape:", labels.shape)
-    print("masked_positions shape:", masked_positions.shape)
+    # print("logits shape:", logits.shape)
+    # print("labels shape:", labels.shape)
+    # print("masked_positions shape:", masked_positions.shape)
 
     # Ensure masked_positions is a boolean tensor
-    masked_positions = torch.nonzero(masked_positions, as_tuple=False).squeeze()
+    # masked_positions = torch.nonzero(masked_positions, as_tuple=False).squeeze()
 
     # Print additional information for debugging
     print("Number of masked positions:", len(masked_positions))
@@ -148,7 +152,19 @@ def compute_mlm_metrics(eval_preds):
 
     # Calculate accuracy only for the masked positions
     try:
-        masked_accuracy = (predictions[masked_positions] == labels[masked_positions]).float().mean().item()
+        print('logits shape:', logits.shape)
+        print("predictions shape:", predictions.shape)
+        print("labels shape:", labels.shape)
+        print("masked_positions shape:", masked_positions.shape)
+        # masked_accuracy = (predictions[masked_positions] == labels[masked_positions]).float().mean().item()
+        # 计算 True 的元素数目
+        correct_predictions = torch.sum((predictions == labels) & masked_positions).item()
+
+        # 计算总元素数目
+        total_elements = masked_positions.sum().item()  # mask 为 True 的位置就是要考虑的元素
+
+        # 计算准确率
+        accuracy = correct_predictions / total_elements
     except Exception as e:
         print("Error:", e)
         print("predictions shape:", predictions.shape)
@@ -160,13 +176,13 @@ def compute_mlm_metrics(eval_preds):
     # ...
 
     return {
-        'masked_accuracy': masked_accuracy,
+        'masked_accuracy': accuracy,
         # Add other metrics as needed
     }
 
 def load_and_split_dataset(txt_file_path, test_size=0.2, random_state=42):
     # 加载数据集
-    data_files = {"train": f"{txt_file_path}/bigtrain.txt", "test": f"{txt_file_path}/bigeval.txt"}
+    data_files = {"train": f"{txt_file_path}/train.txt", "test": f"{txt_file_path}/eval.txt"}
     # pubmed_dataset_streamed = load_dataset("text", data_files=data_files, streaming=True)
     pubmed_dataset_streamed = load_dataset("text", data_files=data_files)
 
@@ -190,7 +206,7 @@ if __name__ == "__main__":
     model_args = ModelArguments()
 
     training_args = TrainingArguments(
-        output_dir='../results',
+        # output_dir='./results',
         num_train_epochs=1,
         per_device_train_batch_size=8,
         logging_dir='./logs',
