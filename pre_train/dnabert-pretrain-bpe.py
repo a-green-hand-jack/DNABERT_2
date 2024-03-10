@@ -3,7 +3,7 @@
 import torch 
 import transformers
 from transformers import AutoTokenizer, EvalPrediction, RobertaTokenizerFast, BertForMaskedLM, Trainer, TrainingArguments, PreTrainedTokenizerFast
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, IterableDataset
 from transformers import DataCollatorForLanguageModeling
 from datasets import load_dataset
 import torch.nn as nn
@@ -14,9 +14,11 @@ import numpy as np
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
 # from datasets import Dataset
 from tokenizers import Tokenizer
+from torch.utils.data import ConcatDataset
+from tqdm import tqdm
+import random
+import os
 
-def gen_from_iterable_dataset(iterable_ds):
-    yield from iterable_ds
 
 class DNADataset(Dataset):
     def __init__(self, encodings):
@@ -27,9 +29,35 @@ class DNADataset(Dataset):
 
     def __getitem__(self, idx):
         return {key: val[idx] for key, val in self.encodings.items()}
-    
-import random
-import os
+
+
+
+def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=1e8, max_length=512):
+    # Initialize an empty list to store individual datasets
+    tokenized_datasets = []
+
+    # Calculate the number of chunks
+    num_chunks = (len(text_data) + chunk_size - 1) // chunk_size
+
+    # Use tqdm for a progress bar
+    for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, len(text_data))
+        chunk = text_data[start_idx:end_idx]
+
+        # Tokenize the chunk using dna_tokenizer
+        tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+
+        # Create a DNADataset from the tokenized chunk
+        dna_dataset_chunk = DNADataset(tokenized_chunk)
+
+        # Append the dataset to the list
+        tokenized_datasets.append(dna_dataset_chunk)
+
+    # Concatenate all the datasets into a single large dataset
+    concatenated_dataset = ConcatDataset(tokenized_datasets)
+
+    return concatenated_dataset
 
 def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
     # Set the random seed for reproducibility
@@ -64,7 +92,28 @@ def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
 
     return train_file_path, eval_file_path
 
+class ChunkedDNADataset(IterableDataset):
+    def __init__(self, tokenizer, text_data, chunk_size=1000, max_length=512):
+        self.tokenizer = tokenizer
+        self.text_data = text_data
+        self.chunk_size = chunk_size
+        self.max_length = max_length
 
+        # Calculate the total number of chunks
+        self.num_chunks = (len(self.text_data) + self.chunk_size - 1) // self.chunk_size
+
+    def __iter__(self):
+        for start_idx in tqdm(range(0, len(self.text_data), self.chunk_size), desc="Tokenizing dataset", total=self.num_chunks):
+            end_idx = min(start_idx + self.chunk_size, len(self.text_data))
+            chunk = self.text_data[start_idx:end_idx]
+
+            # Tokenize the chunk using dna_tokenizer
+            tokenized_chunk = self.tokenizer(chunk, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
+
+            # Create a DNADataset from the tokenized chunk
+            dna_dataset_chunk = DNADataset(tokenized_chunk)
+
+            yield dna_dataset_chunk
 
 
 
@@ -212,7 +261,7 @@ if __name__ == "__main__":
     )
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt-small"
     train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, split_ratio=0.99, random_seed=42)
 
     # 加载自己的tokenizer
@@ -220,13 +269,23 @@ if __name__ == "__main__":
     dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
 
     # 这里是不使用迭代的方法
-    tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
-    # print(tokenized_train_dataset)
-    dna_train_dataset = DNADataset(tokenized_train_dataset)
-    tokenized_eval_dataset = dna_tokenizer(eval_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
-    # print(tokenized_eval_dataset)
-    dna_eval_dataset = DNADataset(tokenized_eval_dataset)
+    # tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
+    # # print(tokenized_train_dataset)
+    # dna_train_dataset = DNADataset(tokenized_train_dataset)
+    # tokenized_eval_dataset = dna_tokenizer(eval_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
+    # # print(tokenized_eval_dataset)
+    # dna_eval_dataset = DNADataset(tokenized_eval_dataset)
     # 这里是不使用迭代的方法
+
+    # 这里是函数分块
+    dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'])
+    dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'])
+    # 这里是函数分块
+
+    # 这里是class 迭代
+    dna_train_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=train_dataset['text'], chunk_size=1e8, max_length=512)
+    dna_eval_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=eval_dataset['text'], chunk_size=1e8, max_length=512)
+    # 这里是class 迭代
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
 
