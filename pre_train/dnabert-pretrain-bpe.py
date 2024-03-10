@@ -32,7 +32,7 @@ class DNADataset(Dataset):
 
 
 
-def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=1e8, max_length=512):
+def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=int(1e8), max_length=512):
     # Initialize an empty list to store individual datasets
     tokenized_datasets = []
 
@@ -261,7 +261,7 @@ if __name__ == "__main__":
     )
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt-small"
+    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-small.txt"
     train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, split_ratio=0.99, random_seed=42)
 
     # 加载自己的tokenizer
@@ -283,8 +283,8 @@ if __name__ == "__main__":
     # 这里是函数分块
 
     # 这里是class 迭代
-    dna_train_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=train_dataset['text'], chunk_size=1e8, max_length=512)
-    dna_eval_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=eval_dataset['text'], chunk_size=1e8, max_length=512)
+    # dna_train_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=train_dataset['text'], chunk_size=1e8, max_length=512)
+    # dna_eval_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=eval_dataset['text'], chunk_size=1e8, max_length=512)
     # 这里是class 迭代
     
     data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
@@ -304,7 +304,7 @@ if __name__ == "__main__":
     trainer.train()
 
     # # 评估模型
-    accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, dna_eval_dataset)
+    accuracy, perplexity = evaluate_mlm(model, data_collator, dna_eval_dataset)
     print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
     print(f"Perplexity: {perplexity:.4f}")
 
