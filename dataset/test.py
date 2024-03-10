@@ -32,7 +32,7 @@ class MyDataset(Dataset):
 if __name__ == "__main__":
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../../Datasets/Human_genome/huixin"
+    txt_file_path = "../../Datasets/Human_genome/huixin"
     tokenizer_path = "../tokenizer/save_tokenizer_small"
     print(f"从{tokenizer_path}中加载tokenizer")
     print(f"从{txt_file_path}中加载数据")

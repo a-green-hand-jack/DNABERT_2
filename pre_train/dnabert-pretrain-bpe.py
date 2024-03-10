@@ -9,6 +9,21 @@ from datasets import load_dataset
 import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Optional
+from functools import partial
+# from datasets import Dataset
+
+def gen_from_iterable_dataset(iterable_ds):
+    yield from iterable_ds
+
+class DNADataset(Dataset):
+    def __init__(self, encodings):
+        self.encodings = encodings
+
+    def __len__(self):
+        return len(self.encodings['input_ids'])
+
+    def __getitem__(self, idx):
+        return {key: val[idx] for key, val in self.encodings.items()}
 
 
 
@@ -149,57 +164,106 @@ def compute_mlm_metrics(eval_preds):
         # Add other metrics as needed
     }
 
-
 def load_and_split_dataset(txt_file_path, test_size=0.2, random_state=42):
     # 加载数据集
-    data_files = {"train": f"{txt_file_path}/train.txt", "test": f"{txt_file_path}/eval.txt"}
-    pubmed_dataset_streamed = load_dataset("text", data_files=data_files, streaming=True)
+    data_files = {"train": f"{txt_file_path}/bigtrain.txt", "test": f"{txt_file_path}/bigeval.txt"}
+    # pubmed_dataset_streamed = load_dataset("text", data_files=data_files, streaming=True)
+    pubmed_dataset_streamed = load_dataset("text", data_files=data_files)
 
-    return pubmed_dataset_streamed['train'], pubmed_dataset_streamed['test']
+    # 转化为PyTorch Dataset
+    train_dataset = pubmed_dataset_streamed['train']
+    eval_dataset = pubmed_dataset_streamed['test']
+
+    # ds = Dataset.from_generator(partial(gen_from_iterable_dataset, iterable_ds), features=iterable_ds.features)
+
+    return train_dataset, eval_dataset
+
+def process_example(example, tokenizer):
+        # 假设输入数据是example["text"]
+        tokenized_inputs = tokenizer.encode(example["text"], padding=True, truncation=True, max_length=512, return_tensors="pt")
+        print(tokenized_inputs)
+        return tokenized_inputs
+
+
 if __name__ == "__main__":
 
     model_args = ModelArguments()
 
     training_args = TrainingArguments(
         output_dir='../results',
-        num_train_epochs=100,
+        num_train_epochs=1,
         per_device_train_batch_size=8,
-        logging_dir='../logs',
+        logging_dir='./logs',
     )
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../../Datasets/Human_genome/huixin"
+    txt_file_path = "../../Datasets/Human_genome/huixin"
     tokenizer_path = "../tokenizer/save_tokenizer_small"
-    print(f"从{tokenizer_path}中加载tokenizer")
-    print(f"从{txt_file_path}中加载数据")
-
     train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, test_size=0.01)
-    dna_tokenizer = RobertaTokenizerFast.from_pretrained(tokenizer_path, padding=True, truncation=True, max_length=512, return_tensors="pt")
+    print(eval_dataset)
+    # print(eval_dataset['text'])
+    # dna_tokenizer = RobertaTokenizerFast.from_pretrained(tokenizer_path, padding=True, truncation=True, max_length=512, return_tensors="pt")  # 难道是使用的RobertaTokenizerFast的问题？
+    dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=True,
+        trust_remote_code=True,
+    )
+    # 使用map函数将train_dataset映射到经过tokenizer处理的数据
+    # 定义处理函数，该函数使用tokenizer处理输入
+    
+    # =================================这里是使用迭代的方法==================================
+    # def process_example(example):
+    #     # 假设输入数据是example["text"]
+    #     tokenized_inputs = dna_tokenizer(example["text"], padding=True, truncation=True, max_length=512, return_tensors="pt")
+    #     # print(tokenized_inputs)
+    #     return tokenized_inputs
+    # tokenized_train_dataset = train_dataset.map(process_example)
+    # tokenized_eval_dataset = eval_dataset.map(process_example)
+    # # tokenized_train_dataset = train_dataset.map(process_example, batched=False)
+    # # tokenized_eval_dataset = eval_dataset.map(process_example, batched=False)
 
+    # # tokenized_train_dataset = {"input_ids":tokenized_train_dataset['input_ids'], "token_type_ids":tokenized_train_dataset['token_type_ids'], "attention_mask":tokenized_train_dataset['attention_mask']}
+
+    # # tokenized_eval_dataset = {"input_ids":tokenized_eval_dataset['input_ids'], "token_type_ids":tokenized_eval_dataset['token_type_ids'], "attention_mask":tokenized_eval_dataset['attention_mask']}
+    # print(tokenized_eval_dataset)
+    # # 创建DNADataset对象
+    # dna_train_dataset = DNADataset(tokenized_train_dataset)
+    # dna_eval_dataset = DNADataset(tokenized_eval_dataset)
+    # ======================这里是使用迭代的方法=============================
+
+    # 这里是不使用迭代的方法
+    tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
+    # print(tokenized_train_dataset)
+    dna_train_dataset = DNADataset(tokenized_train_dataset)
+    tokenized_eval_dataset = dna_tokenizer(eval_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
+    # print(tokenized_eval_dataset)
+    dna_eval_dataset = DNADataset(tokenized_eval_dataset)
+    # 这里是不使用迭代的方法
+    
     data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
 
+    # 加载model
     model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
 
-    # 计算模型参数数量
-    num_parameters = sum(p.numel() for p in model.parameters())
-    print(f"Number of parameters: {num_parameters}")
-    # 打印分词器信息
-    print(dna_tokenizer)
-
+    # 开始训练
     trainer = Trainer(
     model=model,
     args=training_args,
-    train_dataset=train_dataset,
+    train_dataset=dna_train_dataset,
     data_collator=data_collator,
-    eval_dataset=eval_dataset,
+    eval_dataset=dna_eval_dataset,
     compute_metrics=compute_mlm_metrics
     )
-
     trainer.train()
-    # 评估模型
-    accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, eval_dataset)
-    print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
-    print(f"Perplexity: {perplexity:.4f}")
+
+    # # 评估模型
+    # accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, dna_eval_dataset)
+    # print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
+    # print(f"Perplexity: {perplexity:.4f}")
+
 
 
 

@@ -292,7 +292,7 @@ if __name__ == "__main__":
     )
 
     # 初始化 DNASequenceDataset
-    input_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-0.01.txt"
+    input_file_path = "../../Datasets/Human_genome/huixin/train.txt"
     print(f"load dataset from {input_file_path}")
     
     dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -306,7 +306,9 @@ if __name__ == "__main__":
     print(f"load tokenizer from {model_args.model_name_or_path}")
     
     sequences = read_txt_file(input_file_path)
+    print(sequences)
     tokenized_inputs = dna_tokenizer(sequences, padding=True, truncation=True, max_length=512, return_tensors="pt")
+    print(tokenized_inputs)
     dataset = DNADataset(tokenized_inputs)
 
     # 划分数据集
