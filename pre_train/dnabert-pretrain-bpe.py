@@ -10,6 +10,8 @@ import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Optional
 from functools import partial
+import numpy as np
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
 # from datasets import Dataset
 
 def gen_from_iterable_dataset(iterable_ds):
@@ -33,9 +35,6 @@ class ModelArguments:
     n_process: int = field(default=1, metadata={"help":"none"})
     overwrite_cache: bool = False
     model_name_or_path: Optional[str] = field(default="../zhihan1996/DNABERT-2-117M")
-    #model_name_or_path: Optional[str] = field(default="google-bert/bert-base-uncased")
-    #model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
-    #model_name_or_path: Optional[str] = field(default="decapoda-research/llama-7b-hf")
     use_lora: bool = field(default=False, metadata={"help": "whether to use LoRA"})
     lora_r: int = field(default=8, metadata={"help": "hidden dimension for LoRA"})
     lora_alpha: int = field(default=32, metadata={"help": "alpha for LoRA"})
@@ -59,7 +58,7 @@ class TrainingArguments(transformers.TrainingArguments):
     eval_steps: int = field(default=500)
     evaluation_strategy: str = field(default="steps")
     load_best_model_at_end: bool = field(default=True)     # load the best model when finished training (default metric is loss)
-    metric_for_best_model: str = field(default="matthews_correlation") # the metric to use to compare models
+    # metric_for_best_model: str = field(default="matthews_correlation") # the metric to use to compare models
     greater_is_better: bool = field(default=True)           # whether the `metric_for_best_model` should be maximized or not
     logging_strategy: str = field(default="steps")  # Log every "steps"
     logging_steps: int = field(default=100)  # Log every 100 steps
@@ -73,7 +72,7 @@ class TrainingArguments(transformers.TrainingArguments):
     checkpointing: bool = field(default=False)
     dataloader_pin_memory: bool = field(default=False)
     eval_and_save_results: bool = field(default=True)
-    save_model: bool = False
+    save_model: bool = field(default=False)
     seed: int = field(default=42)
 
 
@@ -121,64 +120,19 @@ def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
 
     return accuracy, perplexity.item()
 
-def compute_mlm_metrics(eval_preds):
-    logits_np, labels_np = eval_preds.predictions, eval_preds.label_ids
-    # 将 NumPy 数组转为 PyTorch 张量
-    logits = torch.from_numpy(logits_np)
-    labels = torch.from_numpy(labels_np)
-    # predictions = logits.argmax()
-    predictions =torch.argmax(logits,dim=-1)
-    
-    # Mask positions where labels are -100 (i.e., padding tokens)
-    masked_positions = (labels != -100)
 
-    # Convert masked_positions to a PyTorch tensor
-    # masked_positions = torch.tensor(masked_positions, dtype=torch.bool)
+def compute_mlm_metrics(p):
+    predictions = p.predictions.argmax(axis=2)  # 选择预测的最高概率的标签
+    labels = p.label_ids
 
-    # Print shapes for debugging
-    # print("logits shape:", logits.shape)
-    # print("labels shape:", labels.shape)
-    # print("masked_positions shape:", masked_positions.shape)
+    # 计算准确率
+    accuracy = accuracy_score(labels.flatten(), predictions.flatten())
 
-    # Ensure masked_positions is a boolean tensor
-    # masked_positions = torch.nonzero(masked_positions, as_tuple=False).squeeze()
+    # 计算精确度、召回率、F1 分数
+    precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
 
-    # Print additional information for debugging
-    print("Number of masked positions:", len(masked_positions))
-    print("Sample masked positions:", masked_positions[:10])  # Print the first 10 masked positions
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
-    if len(masked_positions) == 0:
-        raise ValueError("No masked positions found. Check your data or masking logic.")
-
-    # Calculate accuracy only for the masked positions
-    try:
-        print('logits shape:', logits.shape)
-        print("predictions shape:", predictions.shape)
-        print("labels shape:", labels.shape)
-        print("masked_positions shape:", masked_positions.shape)
-        # masked_accuracy = (predictions[masked_positions] == labels[masked_positions]).float().mean().item()
-        # 计算 True 的元素数目
-        correct_predictions = torch.sum((predictions == labels) & masked_positions).item()
-
-        # 计算总元素数目
-        total_elements = masked_positions.sum().item()  # mask 为 True 的位置就是要考虑的元素
-
-        # 计算准确率
-        accuracy = correct_predictions / total_elements
-    except Exception as e:
-        print("Error:", e)
-        print("predictions shape:", predictions.shape)
-        print("labels shape:", labels.shape)
-        print("masked_positions shape:", masked_positions.shape)
-        raise e
-
-    # Calculate other metrics if needed
-    # ...
-
-    return {
-        'masked_accuracy': accuracy,
-        # Add other metrics as needed
-    }
 
 def load_and_split_dataset(txt_file_path, test_size=0.2, random_state=42):
     # 加载数据集
@@ -206,7 +160,7 @@ if __name__ == "__main__":
     model_args = ModelArguments()
 
     training_args = TrainingArguments(
-        # output_dir='./results',
+        output_dir='./results',
         num_train_epochs=1,
         per_device_train_batch_size=8,
         logging_dir='./logs',
@@ -217,8 +171,18 @@ if __name__ == "__main__":
     tokenizer_path = "../tokenizer/save_tokenizer_small"
     train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, test_size=0.01)
     print(eval_dataset)
-    # print(eval_dataset['text'])
-    # dna_tokenizer = RobertaTokenizerFast.from_pretrained(tokenizer_path, padding=True, truncation=True, max_length=512, return_tensors="pt")  # 难道是使用的RobertaTokenizerFast的问题？
+
+    # 加载作者的tokenizer
+    # dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     cache_dir=training_args.cache_dir,
+    #     model_max_length=training_args.model_max_length,
+    #     padding_side="right",
+    #     use_fast=True,
+    #     trust_remote_code=True,
+    # )
+    # 加载自己的tokenizer
+    model_name_or_paht = "../tokenizer/"
     dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -227,28 +191,6 @@ if __name__ == "__main__":
         use_fast=True,
         trust_remote_code=True,
     )
-    # 使用map函数将train_dataset映射到经过tokenizer处理的数据
-    # 定义处理函数，该函数使用tokenizer处理输入
-    
-    # =================================这里是使用迭代的方法==================================
-    # def process_example(example):
-    #     # 假设输入数据是example["text"]
-    #     tokenized_inputs = dna_tokenizer(example["text"], padding=True, truncation=True, max_length=512, return_tensors="pt")
-    #     # print(tokenized_inputs)
-    #     return tokenized_inputs
-    # tokenized_train_dataset = train_dataset.map(process_example)
-    # tokenized_eval_dataset = eval_dataset.map(process_example)
-    # # tokenized_train_dataset = train_dataset.map(process_example, batched=False)
-    # # tokenized_eval_dataset = eval_dataset.map(process_example, batched=False)
-
-    # # tokenized_train_dataset = {"input_ids":tokenized_train_dataset['input_ids'], "token_type_ids":tokenized_train_dataset['token_type_ids'], "attention_mask":tokenized_train_dataset['attention_mask']}
-
-    # # tokenized_eval_dataset = {"input_ids":tokenized_eval_dataset['input_ids'], "token_type_ids":tokenized_eval_dataset['token_type_ids'], "attention_mask":tokenized_eval_dataset['attention_mask']}
-    # print(tokenized_eval_dataset)
-    # # 创建DNADataset对象
-    # dna_train_dataset = DNADataset(tokenized_train_dataset)
-    # dna_eval_dataset = DNADataset(tokenized_eval_dataset)
-    # ======================这里是使用迭代的方法=============================
 
     # 这里是不使用迭代的方法
     tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
@@ -276,9 +218,9 @@ if __name__ == "__main__":
     trainer.train()
 
     # # 评估模型
-    # accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, dna_eval_dataset)
-    # print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
-    # print(f"Perplexity: {perplexity:.4f}")
+    accuracy, perplexity = evaluate_mlm(model, dna_tokenizer, data_collator, dna_eval_dataset)
+    print(f"Accuracy of predicting masked tokens: {accuracy:.4f}")
+    print(f"Perplexity: {perplexity:.4f}")
 
 
 
