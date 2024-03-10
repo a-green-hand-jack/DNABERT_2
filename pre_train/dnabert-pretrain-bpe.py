@@ -2,7 +2,7 @@
 # coding: utf-8
 import torch 
 import transformers
-from transformers import AutoTokenizer, EvalPrediction, RobertaTokenizerFast, BertForMaskedLM, Trainer, TrainingArguments
+from transformers import AutoTokenizer, EvalPrediction, RobertaTokenizerFast, BertForMaskedLM, Trainer, TrainingArguments, PreTrainedTokenizerFast
 from torch.utils.data import Dataset, DataLoader
 from transformers import DataCollatorForLanguageModeling
 from datasets import load_dataset
@@ -13,6 +13,7 @@ from functools import partial
 import numpy as np
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
 # from datasets import Dataset
+from tokenizers import Tokenizer
 
 def gen_from_iterable_dataset(iterable_ds):
     yield from iterable_ds
@@ -26,6 +27,44 @@ class DNADataset(Dataset):
 
     def __getitem__(self, idx):
         return {key: val[idx] for key, val in self.encodings.items()}
+    
+import random
+import os
+
+def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
+    # Set the random seed for reproducibility
+    random.seed(random_seed)
+    # Read lines from the input file
+    with open(input_file_path, 'r', encoding='utf-8') as file:
+        lines = file.readlines()
+
+    # Shuffle the lines randomly
+    random.shuffle(lines)
+
+    # Calculate the split index
+    split_index = int(len(lines) * split_ratio)
+
+    # Split the lines into train and eval sets
+    train_lines = lines[:split_index]
+    eval_lines = lines[split_index:]
+    print(f"训练集中含有的碱基的长度{len(train_lines) * 512}")
+    print(f"验证集中含有的碱基的长度{len(eval_lines) * 512}")
+
+    # Define output file paths
+    train_file_path = os.path.join(os.path.dirname(input_file_path), 'train.txt')
+    eval_file_path = os.path.join(os.path.dirname(input_file_path), 'eval.txt')
+
+    # Write train lines to train file
+    with open(train_file_path, 'w', encoding='utf-8') as train_file:
+        train_file.writelines(train_lines)
+
+    # Write eval lines to eval file
+    with open(eval_file_path, 'w', encoding='utf-8') as eval_file:
+        eval_file.writelines(eval_lines)
+
+    return train_file_path, eval_file_path
+
+
 
 
 
@@ -90,7 +129,7 @@ class MLMNetwork(nn.Module):
     def device(self):
         return next(self.parameters()).device
     
-def evaluate_mlm(model, tokenizer, data_collator, eval_dataset):
+def evaluate_mlm(model, data_collator, eval_dataset):
     model.eval()
     eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=data_collator)
     
@@ -134,26 +173,32 @@ def compute_mlm_metrics(p):
     return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
 
-def load_and_split_dataset(txt_file_path, test_size=0.2, random_state=42):
+def load_and_split_dataset(txt_file_path, split_ratio=0.2, random_seed=42):
+    # Example usage:
+    train_file, eval_file = split_txt_file(txt_file_path, split_ratio, random_seed)
+    print(f"Train file created: {train_file}")
+    print(f"Eval file created: {eval_file}")
     # 加载数据集
-    data_files = {"train": f"{txt_file_path}/train.txt", "test": f"{txt_file_path}/eval.txt"}
-    # pubmed_dataset_streamed = load_dataset("text", data_files=data_files, streaming=True)
-    pubmed_dataset_streamed = load_dataset("text", data_files=data_files)
-
+    data_files = {"train": train_file, "test": eval_file}
+    dataset = load_dataset("text", data_files=data_files)
     # 转化为PyTorch Dataset
-    train_dataset = pubmed_dataset_streamed['train']
-    eval_dataset = pubmed_dataset_streamed['test']
-
-    # ds = Dataset.from_generator(partial(gen_from_iterable_dataset, iterable_ds), features=iterable_ds.features)
-
+    train_dataset = dataset['train']
+    eval_dataset = dataset['test']
     return train_dataset, eval_dataset
 
-def process_example(example, tokenizer):
-        # 假设输入数据是example["text"]
-        tokenized_inputs = tokenizer.encode(example["text"], padding=True, truncation=True, max_length=512, return_tensors="pt")
-        print(tokenized_inputs)
-        return tokenized_inputs
 
+def load_and_convert_tokenizer(load_path):
+    new_tokenizer = Tokenizer.from_file(load_path)
+    # print(new_tokenizer.mask_token)
+    
+    transformer_tokenizer = PreTrainedTokenizerFast(tokenizer_object=new_tokenizer, 
+                                                    mask_token = "[MASK]", 
+                                                    unk_token = '[UNK]', 
+                                                    pad_token = '[PAD]', 
+                                                    sep_token = '[SEP]', 
+                                                    cls_token = '[CLS]', 
+                                                    padding_site='right')
+    return transformer_tokenizer
 
 if __name__ == "__main__":
 
@@ -167,30 +212,12 @@ if __name__ == "__main__":
     )
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../Datasets/Human_genome/huixin"
-    tokenizer_path = "../tokenizer/save_tokenizer_small"
-    train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, test_size=0.01)
-    print(eval_dataset)
+    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+    train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, split_ratio=0.99, random_seed=42)
 
-    # 加载作者的tokenizer
-    # dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
-    #     model_args.model_name_or_path,
-    #     cache_dir=training_args.cache_dir,
-    #     model_max_length=training_args.model_max_length,
-    #     padding_side="right",
-    #     use_fast=True,
-    #     trust_remote_code=True,
-    # )
     # 加载自己的tokenizer
-    model_name_or_paht = "../tokenizer/"
-    dna_tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=True,
-        trust_remote_code=True,
-    )
+    model_name_or_path = "../tokenizer/save_json/config.json"
+    dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
 
     # 这里是不使用迭代的方法
     tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")

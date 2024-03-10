@@ -52,10 +52,18 @@ def save_tokenizer(tokenizer, save_path):
     # os.makedirs(os.path.dirname(save_path), exist_ok=True)
     os.makedirs(save_path, exist_ok=True)
     print(f"Creating directory: {save_path}")
-    # tokenizer.save(save_path) # 这种保存方式得到是一个json文件，虽然也包括了一切需要的信息，但是不能直接被RobertaTokenizerFast.from_pretrained 接受
+    # tokenizer.save(save_path) # 这种保存方式得到是一个json文件，虽然也包括了一切需要的信息，但是不能直接被RobertaTokenizerFast.from_pretrained 接受,但是可以使用：
+    # def load_and_convert_tokenizer(load_path):
+    #     new_tokenizer = Tokenizer.from_file(load_path)
+    #     # print(new_tokenizer.mask_token)
+    #     transformer_tokenizer = PreTrainedTokenizerFast(tokenizer_object=new_tokenizer, mask_token = "[MASK]")
+    #     return transformer_tokenizer
+    # 进行加载
 
 
-    tokenizer.model.save(save_path) # 这种方法保存是一个merges.txt+vocab.json，可以被RobertaTokenizerFast.from_pretrained直接接受
+    tokenizer.model.save(save_path) # 这种方法保存是一个merges.txt+vocab.json，可以被RobertaTokenizerFast.from_pretrained直接接受，采用下面这种方法加载：
+    # tokenizer_path = "../tokenizer/save_tokenizer_small"
+    # tokenizer = RobertaTokenizerFast.from_pretrained(tokenizer_path, padding=True, truncation=True, max_length=512, return_tensors="pt")
     
 
 def main(data_path:str = "",

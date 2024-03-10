@@ -1,45 +1,24 @@
-from tokenizers.implementations import ByteLevelBPETokenizer
-from tokenizers.processors import BertProcessing
-
-
-# 加载一个分词器
-# 自定义 ByteLevelBPETokenizer
-# tokenizer = ByteLevelBPETokenizer(
-#     "./save_tokenizer/vocab.json",
-#     "./save_tokenizer/merges.txt",
-# )
-
-# 自定义 BertProcessing 后处理器
-# post_processor = BertProcessing(
-#     ("</s>", tokenizer.token_to_id("</s>")),
-#     ("<s>", tokenizer.token_to_id("<s>")),
-# )
-
-# # 设置 ByteLevelBPETokenizer 的后处理器
-# tokenizer.post_processor = post_processor
-
-# 启用截断
-# tokenizer.enable_truncation(max_length=512)
-
-# DNA序列
-# dna_sequence = "ATGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT"
-
-
-# print(tokenizer.encode(dna_sequence))
-
-# print(tokenizer.encode(dna_sequence).tokens)
-
-# 现在在teansformers中重新创建tokenizer
-from transformers import RobertaTokenizerFast
-
-tokenizer = RobertaTokenizerFast.from_pretrained("./save_tokenizer_small", max_len=512)
-
-# 加载一个数据集
 from transformers import LineByLineTextDataset
+from transformers import PreTrainedTokenizerFast
+from tokenizers import Tokenizer, models, pre_tokenizers
+
+def load_and_convert_tokenizer(load_path):
+    new_tokenizer = Tokenizer.from_file(load_path)
+    # print(new_tokenizer.mask_token)
+    transformer_tokenizer = PreTrainedTokenizerFast(tokenizer_object=new_tokenizer, mask_token = "[MASK]")
+    return transformer_tokenizer
+
+# Example usage:
+# save_path = "./tokenizer/save_tokenizer_small"
+save_path = "./save_json/config.json"
+tokenizer = load_and_convert_tokenizer(save_path)
+
+
+# tokenizer = RobertaTokenizerFast.from_pretrained("./save_tokenizer_small", max_len=512)
 
 dataset = LineByLineTextDataset(
     tokenizer=tokenizer,
-    file_path="../../../Datasets/Human_genome/huixin/24_chromosomes-002-small.txt",
+    file_path="../../Datasets/Human_genome/huixin/eval.txt",
     block_size=128,
 )
 # 验证数据集的情况
