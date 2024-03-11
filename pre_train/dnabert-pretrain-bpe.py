@@ -60,7 +60,7 @@ class DNADataset(Dataset):
 #     return concatenated_dataset
 
 
-def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks, max_length=512):
+def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks=5, max_length=512):
     # Create a temporary folder to store cached features
     cache_folder = "./cached_features_file"
     os.makedirs(cache_folder, exist_ok=True)
@@ -300,7 +300,7 @@ if __name__ == "__main__":
     )
 
     # 替换成你的文件路径和其他参数
-    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-small.txt"
+    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
     train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, split_ratio=0.99, random_seed=42)
 
     # 加载自己的tokenizer
@@ -317,8 +317,8 @@ if __name__ == "__main__":
     # 这里是不使用迭代的方法
 
     # 这里是函数分块
-    dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'])
-    dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'])
+    dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'], num_chunks=10)
+    dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'], num_chunks=10)
     # 这里是函数分块
 
     # 这里是class 迭代
