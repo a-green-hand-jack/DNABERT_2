@@ -32,21 +32,60 @@ class DNADataset(Dataset):
 
 
 
-def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=int(1e8), max_length=512):
+# def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=int(1e8), max_length=512):
+#     # Initialize an empty list to store individual datasets
+#     tokenized_datasets = []
+
+#     # Calculate the number of chunks
+#     num_chunks = (len(text_data) + chunk_size - 1) // chunk_size
+
+#     # Use tqdm for a progress bar
+#     for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
+#         start_idx = i * chunk_size
+#         end_idx = min((i + 1) * chunk_size, len(text_data))
+#         chunk = text_data[start_idx:end_idx]
+
+#         # Tokenize the chunk using dna_tokenizer
+#         tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+
+#         # Create a DNADataset from the tokenized chunk
+#         dna_dataset_chunk = DNADataset(tokenized_chunk)
+
+#         # Append the dataset to the list
+#         tokenized_datasets.append(dna_dataset_chunk)
+
+#     # Concatenate all the datasets into a single large dataset
+#     concatenated_dataset = ConcatDataset(tokenized_datasets)
+
+#     return concatenated_dataset
+
+
+def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks, max_length=512):
+    # Create a temporary folder to store cached features
+    cache_folder = "./cached_features_file"
+    os.makedirs(cache_folder, exist_ok=True)
+
     # Initialize an empty list to store individual datasets
-    tokenized_datasets = []
-
-    # Calculate the number of chunks
-    num_chunks = (len(text_data) + chunk_size - 1) // chunk_size
-
-    # Use tqdm for a progress bar
+    
+    text_data_len = len(text_data)
+    # Tokenize and save each chunk to the temporary folder
     for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
-        start_idx = i * chunk_size
-        end_idx = min((i + 1) * chunk_size, len(text_data))
+        start_idx = i * text_data_len // num_chunks
+        end_idx = (i + 1) * text_data_len // num_chunks
         chunk = text_data[start_idx:end_idx]
 
         # Tokenize the chunk using dna_tokenizer
         tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+
+        # Save the tokenized chunk to a file
+        filename = os.path.join(cache_folder, f"chunk_{i}.pt")
+        torch.save(tokenized_chunk, filename)
+
+    # Load and concatenate all the datasets from the temporary folder
+    tokenized_datasets = []
+    for i in tqdm(range(num_chunks), desc="Loading tokenized datasets"):
+        filename = os.path.join(cache_folder, f"chunk_{i}.pt")
+        tokenized_chunk = torch.load(filename)
 
         # Create a DNADataset from the tokenized chunk
         dna_dataset_chunk = DNADataset(tokenized_chunk)
