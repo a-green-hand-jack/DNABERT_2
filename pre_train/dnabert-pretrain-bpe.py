@@ -39,43 +39,87 @@ def convert_line_to_example(args):
     return tokenizer.batch_encode_plus(lines, add_special_tokens=True,truncation=True, max_length=block_size)["input_ids"]
 
 class LineByLineTextDataset(Dataset):
-    def __init__(self, tokenizer: PreTrainedTokenizer, n_process:int=1, file_path: str="", block_size=512):
+    def __init__(self, tokenizer: PreTrainedTokenizer, file_path: str = "", block_size=512, batch_size=8):
         assert os.path.isfile(file_path)
-        logger.info("Creating features from dataset file at %s", file_path)
+        print("Creating features from dataset file at %s", file_path)
 
         with open(file_path, encoding="utf-8") as f:
-            lines = [line for line in f.read().splitlines() if (len(line) > 0 and not line.isspace())]
-        
-        if n_process == 1:
-            self.examples = tokenizer.batch_encode_plus(lines, add_special_tokens=True,truncation=True, max_length=block_size)["input_ids"]
-        else:
-            n_proc = n_process
-            p = Pool(n_proc)
-            indexes = [0]
-            len_slice = int(len(lines)/n_proc)
-            for i in range(1, n_proc+1):
-                if i != n_proc:
-                    indexes.append(len_slice*(i))
-                else:
-                    indexes.append(len(lines))
-            results = []
-            for i in range(n_proc):
-                results.append(p.apply_async(convert_line_to_example,[tokenizer, lines[indexes[i]:indexes[i+1]], block_size,]))
-                print(str(i) + " start")
-            p.close() 
-            p.join()
+            self.lines = [line for line in f.read().splitlines() if (len(line) > 0 and not line.isspace())]
 
-            self.examples = []
-            for result in results:
-                ids = result.get()
-                self.examples.extend(ids)
+        self.tokenizer = tokenizer
+        self.block_size = block_size
+        self.batch_size = batch_size
+        self.current_index = 0
+        print(f"数据集的长度是{len(self.lines)}")
 
     def __len__(self):
-        return len(self.examples)
 
-    def __getitem__(self, i):
-        return torch.tensor(self.examples[i], dtype=torch.long)
+        return len(self.lines) 
 
+    def __getitem__(self, index):
+        # start_idx = self.current_index
+        try:
+            lines = self.lines[index]
+        except IndexError:
+            print(f"IndexError: list index {self.current_index} out of range, and the max index should be {len(self.lines)} and the index is{index}")
+            raise
+
+        if not lines:
+            raise IndexError(f"Index {self.current_index} is out of bounds.")
+
+        self.current_index += self.block_size
+
+        encoded = self.tokenizer(lines, add_special_tokens=True, truncation=True)['input_ids']
+        tensor_encoded = torch.tensor(encoded, dtype=torch.long)
+
+        return tensor_encoded
+
+    
+@dataclass
+class DataCollatorForMLM(DataCollatorForLanguageModeling):
+    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        # print("batch encoded tonser shape:", instances[0].shape)
+        # print("batch length:", len(instances))
+
+        instances = {'input_ids':instances}
+        input_ids, labels = self.mask_tokens(instances)
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        )
+
+    def mask_tokens(
+        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # print(instances['input_ids'])
+        input_ids = pad_sequence(
+            instances['input_ids'],
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id
+        )
+        # input_ids = instances['input_ids']
+        labels = input_ids.clone()
+
+        probability_matrix = torch.full(input_ids.shape, mlm_probability)
+        special_tokens_mask = [
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
+        ]
+        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
+
+        masked_indices = torch.bernoulli(probability_matrix).bool()
+        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
+        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
+        input_ids[indices_random] = random_words[indices_random]
+
+        return input_ids, labels
 
 class DNADataset(Dataset):
     def __init__(self, encodings):
@@ -321,66 +365,17 @@ def load_and_convert_tokenizer(load_path):
 
 
 
-@dataclass
-class DataCollatorForMLM(DataCollatorForLanguageModeling):
-    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        # print(instances)
-        # print(self.mask_tokens(instances))
-        instances = {'input_ids':instances}
-        # instances = [instance["input_ids"] for instance in instances]
 
-        input_ids, labels = self.mask_tokens(instances)
-        # print("input ids:", input_ids)
-        # print("labels:", labels)
-        return dict(
-            input_ids=input_ids,
-            labels=labels,
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
-        )
-
-    def mask_tokens(
-        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # print("Debug: instances:", instances)
-
-        input_ids = pad_sequence(
-            instances['input_ids'],
-            # [instance["input_ids"] for instance in instances['input_ids']],
-            batch_first=True,
-            padding_value=self.tokenizer.pad_token_id
-        )
-        # print("Debug: input_ids shape before mask_tokens:", input_ids.shape)
-        labels = input_ids.clone()
-
-        probability_matrix = torch.full(input_ids.shape, mlm_probability)
-        special_tokens_mask = [
-            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
-        ]
-        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
-
-        masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100  # We only compute loss on masked tokens
-
-        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
-        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
-        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
-
-        # 10% of the time, we replace masked input tokens with random word
-        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
-        input_ids[indices_random] = random_words[indices_random]
-
-        return input_ids, labels
 
     
 if __name__ == "__main__":
 
     model_args = ModelArguments()
-
+    batch_size = 32
     training_args = TrainingArguments(
         output_dir='./results',
         num_train_epochs=1,
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=batch_size,
         logging_dir='./logs',
     )
 
@@ -397,8 +392,8 @@ if __name__ == "__main__":
     # dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'], num_chunks=10)
     # dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'], num_chunks=10)
     # 这里是函数分块
-    dna_train_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=train_file_path)
-    dna_eval_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=eval_file_path)
+    dna_train_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=train_file_path, batch_size=batch_size)
+    dna_eval_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=eval_file_path, batch_size=batch_size)
 
     # data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
     data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
