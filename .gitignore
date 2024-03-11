@@ -10,3 +10,4 @@ tokenizer/chunks
 logs
 pre_train/logs
 pre_train/results
+pre_train/cached_features_file

@@ -8,7 +8,7 @@ from transformers import DataCollatorForLanguageModeling
 from datasets import load_dataset
 import torch.nn as nn
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Sequence, Tuple, List
 from functools import partial
 import numpy as np
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
@@ -18,6 +18,63 @@ from torch.utils.data import ConcatDataset
 from tqdm import tqdm
 import random
 import os
+from typing import List, Union, Dict, Any, Sequence
+from transformers import DataCollatorForLanguageModeling
+import torch
+from torch.nn.utils.rnn import pad_sequence
+
+from transformers import PreTrainedTokenizer
+from torch.utils.data import Dataset
+import torch
+import os
+import pickle
+from multiprocessing import Pool
+from tqdm import tqdm
+import logging
+
+logger = logging.getLogger(__name__)
+
+def convert_line_to_example(args):
+    tokenizer, lines, block_size = args
+    return tokenizer.batch_encode_plus(lines, add_special_tokens=True,truncation=True, max_length=block_size)["input_ids"]
+
+class LineByLineTextDataset(Dataset):
+    def __init__(self, tokenizer: PreTrainedTokenizer, n_process:int=1, file_path: str="", block_size=512):
+        assert os.path.isfile(file_path)
+        logger.info("Creating features from dataset file at %s", file_path)
+
+        with open(file_path, encoding="utf-8") as f:
+            lines = [line for line in f.read().splitlines() if (len(line) > 0 and not line.isspace())]
+        
+        if n_process == 1:
+            self.examples = tokenizer.batch_encode_plus(lines, add_special_tokens=True,truncation=True, max_length=block_size)["input_ids"]
+        else:
+            n_proc = n_process
+            p = Pool(n_proc)
+            indexes = [0]
+            len_slice = int(len(lines)/n_proc)
+            for i in range(1, n_proc+1):
+                if i != n_proc:
+                    indexes.append(len_slice*(i))
+                else:
+                    indexes.append(len(lines))
+            results = []
+            for i in range(n_proc):
+                results.append(p.apply_async(convert_line_to_example,[tokenizer, lines[indexes[i]:indexes[i+1]], block_size,]))
+                print(str(i) + " start")
+            p.close() 
+            p.join()
+
+            self.examples = []
+            for result in results:
+                ids = result.get()
+                self.examples.extend(ids)
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, i):
+        return torch.tensor(self.examples[i], dtype=torch.long)
 
 
 class DNADataset(Dataset):
@@ -30,56 +87,26 @@ class DNADataset(Dataset):
     def __getitem__(self, idx):
         return {key: val[idx] for key, val in self.encodings.items()}
 
-
-
-# def tokenize_and_concat_dataset(dna_tokenizer, text_data, chunk_size=int(1e8), max_length=512):
-#     # Initialize an empty list to store individual datasets
-#     tokenized_datasets = []
-
-#     # Calculate the number of chunks
-#     num_chunks = (len(text_data) + chunk_size - 1) // chunk_size
-
-#     # Use tqdm for a progress bar
-#     for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
-#         start_idx = i * chunk_size
-#         end_idx = min((i + 1) * chunk_size, len(text_data))
-#         chunk = text_data[start_idx:end_idx]
-
-#         # Tokenize the chunk using dna_tokenizer
-#         tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
-
-#         # Create a DNADataset from the tokenized chunk
-#         dna_dataset_chunk = DNADataset(tokenized_chunk)
-
-#         # Append the dataset to the list
-#         tokenized_datasets.append(dna_dataset_chunk)
-
-#     # Concatenate all the datasets into a single large dataset
-#     concatenated_dataset = ConcatDataset(tokenized_datasets)
-
-#     return concatenated_dataset
-
-
-def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks=5, max_length=512):
+def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks=5, max_length=512, if_over_cache=True):
     # Create a temporary folder to store cached features
     cache_folder = "./cached_features_file"
     os.makedirs(cache_folder, exist_ok=True)
 
-    # Initialize an empty list to store individual datasets
-    
     text_data_len = len(text_data)
+
     # Tokenize and save each chunk to the temporary folder
-    for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
-        start_idx = i * text_data_len // num_chunks
-        end_idx = (i + 1) * text_data_len // num_chunks
-        chunk = text_data[start_idx:end_idx]
+    if if_over_cache:
+        for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
+            start_idx = i * text_data_len // num_chunks
+            end_idx = (i + 1) * text_data_len // num_chunks
+            chunk = text_data[start_idx:end_idx]
 
-        # Tokenize the chunk using dna_tokenizer
-        tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+            # Tokenize the chunk using dna_tokenizer
+            tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
 
-        # Save the tokenized chunk to a file
-        filename = os.path.join(cache_folder, f"chunk_{i}.pt")
-        torch.save(tokenized_chunk, filename)
+            # Save the tokenized chunk to a file
+            filename = os.path.join(cache_folder, f"chunk_{i}.pt")
+            torch.save(tokenized_chunk, filename)
 
     # Load and concatenate all the datasets from the temporary folder
     tokenized_datasets = []
@@ -97,6 +124,7 @@ def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks=5, max_leng
     concatenated_dataset = ConcatDataset(tokenized_datasets)
 
     return concatenated_dataset
+
 
 def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
     # Set the random seed for reproducibility
@@ -128,6 +156,8 @@ def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
     # Write eval lines to eval file
     with open(eval_file_path, 'w', encoding='utf-8') as eval_file:
         eval_file.writelines(eval_lines)
+    print(f"训练集的保存的路径是{train_file_path}")
+    print(f"验证集保存的路径是{eval_file_path}")
 
     return train_file_path, eval_file_path
 
@@ -263,16 +293,17 @@ def compute_mlm_metrics(p):
 
 def load_and_split_dataset(txt_file_path, split_ratio=0.2, random_seed=42):
     # Example usage:
+    print(f"Load data from {txt_file_path}")
     train_file, eval_file = split_txt_file(txt_file_path, split_ratio, random_seed)
     print(f"Train file created: {train_file}")
     print(f"Eval file created: {eval_file}")
     # 加载数据集
-    data_files = {"train": train_file, "test": eval_file}
-    dataset = load_dataset("text", data_files=data_files)
-    # 转化为PyTorch Dataset
-    train_dataset = dataset['train']
-    eval_dataset = dataset['test']
-    return train_dataset, eval_dataset
+    # data_files = {"train": train_file, "test": eval_file}
+    # dataset = load_dataset("text", data_files=data_files)
+    # # 转化为PyTorch Dataset
+    # train_dataset = dataset['train']
+    # eval_dataset = dataset['test']
+    return train_file, eval_file
 
 
 def load_and_convert_tokenizer(load_path):
@@ -288,6 +319,60 @@ def load_and_convert_tokenizer(load_path):
                                                     padding_site='right')
     return transformer_tokenizer
 
+
+
+@dataclass
+class DataCollatorForMLM(DataCollatorForLanguageModeling):
+    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        # print(instances)
+        # print(self.mask_tokens(instances))
+        instances = {'input_ids':instances}
+        # instances = [instance["input_ids"] for instance in instances]
+
+        input_ids, labels = self.mask_tokens(instances)
+        # print("input ids:", input_ids)
+        # print("labels:", labels)
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        )
+
+    def mask_tokens(
+        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # print("Debug: instances:", instances)
+
+        input_ids = pad_sequence(
+            instances['input_ids'],
+            # [instance["input_ids"] for instance in instances['input_ids']],
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id
+        )
+        # print("Debug: input_ids shape before mask_tokens:", input_ids.shape)
+        labels = input_ids.clone()
+
+        probability_matrix = torch.full(input_ids.shape, mlm_probability)
+        special_tokens_mask = [
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
+        ]
+        probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
+
+        masked_indices = torch.bernoulli(probability_matrix).bool()
+        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
+        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
+        input_ids[indices_random] = random_words[indices_random]
+
+        return input_ids, labels
+
+    
 if __name__ == "__main__":
 
     model_args = ModelArguments()
@@ -301,32 +386,22 @@ if __name__ == "__main__":
 
     # 替换成你的文件路径和其他参数
     txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-    train_dataset, eval_dataset = load_and_split_dataset(txt_file_path, split_ratio=0.99, random_seed=42)
+    train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
 
     # 加载自己的tokenizer
     model_name_or_path = "../tokenizer/save_json/config.json"
     dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
 
-    # 这里是不使用迭代的方法
-    # tokenized_train_dataset = dna_tokenizer(train_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
-    # # print(tokenized_train_dataset)
-    # dna_train_dataset = DNADataset(tokenized_train_dataset)
-    # tokenized_eval_dataset = dna_tokenizer(eval_dataset['text'], padding=True, truncation=True, max_length=512, return_tensors="pt")
-    # # print(tokenized_eval_dataset)
-    # dna_eval_dataset = DNADataset(tokenized_eval_dataset)
-    # 这里是不使用迭代的方法
 
     # 这里是函数分块
-    dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'], num_chunks=10)
-    dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'], num_chunks=10)
+    # dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'], num_chunks=10)
+    # dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'], num_chunks=10)
     # 这里是函数分块
+    dna_train_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=train_file_path)
+    dna_eval_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=eval_file_path)
 
-    # 这里是class 迭代
-    # dna_train_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=train_dataset['text'], chunk_size=1e8, max_length=512)
-    # dna_eval_dataset = ChunkedDNADataset(tokenizer=dna_tokenizer, text_data=eval_dataset['text'], chunk_size=1e8, max_length=512)
-    # 这里是class 迭代
-    
-    data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
+    # data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
+    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
 
     # 加载model
     model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
