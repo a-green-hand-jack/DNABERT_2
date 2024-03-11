@@ -60,15 +60,12 @@ def main(csv_file_path:str = "", txt_output_path: str = ""):
     with open(txt_output_path, 'w') as file:
         file.write(resulting_text)
 
-    # output_file_path = f"../../Datasets/Human_genome/huixin/24_chromosomes-002-clean.txt"
-    # process_and_save_file(txt_output_path, output_file_path)
-
 if __name__ == "__main__":
     csv_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.csv"
     txt_output_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-    small_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002-half.txt"
+    # small_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
 
-    # main(csv_file_path = csv_file_path, txt_output_path =txt_output_path)
+    main(csv_file_path = csv_file_path, txt_output_path =txt_output_path)
     # 示例用法：选择原文件的30%的行并保存到新文件
-    select_random_lines(txt_output_path, small_path, 0.5)
+    # select_random_lines(txt_output_path, small_path, 0.5)
 

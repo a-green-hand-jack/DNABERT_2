@@ -1,47 +1,56 @@
 #!/usr/bin/env python
 # coding: utf-8
-import torch 
-import transformers
-from transformers import AutoTokenizer, EvalPrediction, RobertaTokenizerFast, BertForMaskedLM, Trainer, TrainingArguments, PreTrainedTokenizerFast
-from torch.utils.data import Dataset, DataLoader, IterableDataset
-from transformers import DataCollatorForLanguageModeling
-from datasets import load_dataset
-import torch.nn as nn
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Sequence, Tuple, List
-from functools import partial
-import numpy as np
-from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
-# from datasets import Dataset
-from tokenizers import Tokenizer
-from torch.utils.data import ConcatDataset
-from tqdm import tqdm
+import os
 import random
-import os
-from typing import List, Union, Dict, Any, Sequence
-from transformers import DataCollatorForLanguageModeling
+from typing import Optional, Dict, Sequence, Tuple, List, Union, Any
+
+import numpy as np
 import torch
+import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
-
-from transformers import PreTrainedTokenizer
-from torch.utils.data import Dataset
-import torch
-import os
-import pickle
-from multiprocessing import Pool
+from torch.utils.data import Dataset, DataLoader, IterableDataset, ConcatDataset
 from tqdm import tqdm
-import logging
 
-logger = logging.getLogger(__name__)
+from sklearn.metrics import (
+    confusion_matrix,
+    accuracy_score,
+    precision_recall_fscore_support
+)
 
-def convert_line_to_example(args):
-    tokenizer, lines, block_size = args
-    return tokenizer.batch_encode_plus(lines, add_special_tokens=True,truncation=True, max_length=block_size)["input_ids"]
+import transformers
+from transformers import (
+    AutoTokenizer,
+    EvalPrediction,
+    RobertaTokenizerFast,
+    BertForMaskedLM,
+    Trainer,
+    TrainingArguments,
+    PreTrainedTokenizerFast,
+    PreTrainedTokenizer,
+    DataCollatorForLanguageModeling
+)
+
+from datasets import load_dataset
+from tokenizers import Tokenizer
+from dataclasses import dataclass, field
+
+from multiprocessing import Pool
+import pickle
+
 
 class LineByLineTextDataset(Dataset):
-    def __init__(self, tokenizer: PreTrainedTokenizer, file_path: str = "", block_size=512, batch_size=8):
+    def __init__(self, tokenizer: PreTrainedTokenizer, file_path: str = "", block_size: int = 512, batch_size: int = 8):
+        """
+        Initializes the LineByLineTextDataset.
+
+        Args:
+            tokenizer (PreTrainedTokenizer): The tokenizer to use for tokenization.
+            file_path (str): The path to the dataset file.
+            block_size (int): The block size for tokenization.
+            batch_size (int): The batch size for processing.
+        """
         assert os.path.isfile(file_path)
-        print("Creating features from dataset file at %s", file_path)
+        print("Creating features from dataset file at %s" % file_path)
 
         with open(file_path, encoding="utf-8") as f:
             self.lines = [line for line in f.read().splitlines() if (len(line) > 0 and not line.isspace())]
@@ -50,18 +59,31 @@ class LineByLineTextDataset(Dataset):
         self.block_size = block_size
         self.batch_size = batch_size
         self.current_index = 0
-        print(f"数据集的长度是{len(self.lines)}")
+        print(f"Length of the dataset is {len(self.lines)}")
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """
+        Returns the length of the dataset.
 
-        return len(self.lines) 
+        Returns:
+            int: The length of the dataset.
+        """
+        return len(self.lines)
 
-    def __getitem__(self, index):
-        # start_idx = self.current_index
+    def __getitem__(self, index: int) -> torch.Tensor:
+        """
+        Retrieves an item from the dataset at the specified index.
+
+        Args:
+            index (int): The index of the item to retrieve.
+
+        Returns:
+            torch.Tensor: The encoded tensor of the input text.
+        """
         try:
             lines = self.lines[index]
         except IndexError:
-            print(f"IndexError: list index {self.current_index} out of range, and the max index should be {len(self.lines)} and the index is{index}")
+            print(f"IndexError: list indexout of range, and the max index should be {len(self.lines)} and the index is {index}")
             raise
 
         if not lines:
@@ -72,16 +94,21 @@ class LineByLineTextDataset(Dataset):
         encoded = self.tokenizer(lines, add_special_tokens=True, truncation=True)['input_ids']
         tensor_encoded = torch.tensor(encoded, dtype=torch.long)
 
-        return tensor_encoded
+        return {'input_ids': tensor_encoded}
 
-    
 @dataclass
 class DataCollatorForMLM(DataCollatorForLanguageModeling):
     def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        # print("batch encoded tonser shape:", instances[0].shape)
-        # print("batch length:", len(instances))
+        """
+        Collate function for masked language modeling.
 
-        instances = {'input_ids':instances}
+        Args:
+            instances (Sequence[Dict[str, torch.Tensor]]): List of instances containing input tensors.
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
+        """
+
         input_ids, labels = self.mask_tokens(instances)
         return dict(
             input_ids=input_ids,
@@ -92,13 +119,21 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
     def mask_tokens(
         self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # print(instances['input_ids'])
+        """
+        Mask tokens for masked language modeling.
+
+        Args:
+            instances (Sequence[Dict[str, torch.Tensor]]): List of instances containing input tensors.
+            mlm_probability (float): Probability of masking tokens.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Tuple containing input_ids and labels tensors.
+        """
         input_ids = pad_sequence(
-            instances['input_ids'],
+            [instance['input_ids'] for instance in instances],
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id
         )
-        # input_ids = instances['input_ids']
         labels = input_ids.clone()
 
         probability_matrix = torch.full(input_ids.shape, mlm_probability)
@@ -110,69 +145,63 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         masked_indices = torch.bernoulli(probability_matrix).bool()
         labels[~masked_indices] = -100  # We only compute loss on masked tokens
 
-        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
         indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
         input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
 
-        # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
         random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
         input_ids[indices_random] = random_words[indices_random]
 
         return input_ids, labels
 
-class DNADataset(Dataset):
-    def __init__(self, encodings):
-        self.encodings = encodings
 
-    def __len__(self):
-        return len(self.encodings['input_ids'])
+class MLMNetwork(nn.Module):
+    def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
+        super(MLMNetwork, self).__init__()
+        self.base_model = BertForMaskedLM.from_pretrained(model_name_or_path, cache_dir=cache_dir)
 
-    def __getitem__(self, idx):
-        return {key: val[idx] for key, val in self.encodings.items()}
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+        """
+        Forward pass of the MLMNetwork model.
 
-def tokenize_and_concat_dataset(dna_tokenizer, text_data, num_chunks=5, max_length=512, if_over_cache=True):
-    # Create a temporary folder to store cached features
-    cache_folder = "./cached_features_file"
-    os.makedirs(cache_folder, exist_ok=True)
+        Args:
+            input_ids: Input tensor of token ids.
+            attention_mask: Optional tensor for attention mask.
+            labels: Optional tensor for masked language modeling labels.
+            **kwargs: Additional keyword arguments.
 
-    text_data_len = len(text_data)
+        Returns:
+            outputs: Model outputs from the base model.
+        """
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        return outputs
 
-    # Tokenize and save each chunk to the temporary folder
-    if if_over_cache:
-        for i in tqdm(range(num_chunks), desc="Tokenizing dataset"):
-            start_idx = i * text_data_len // num_chunks
-            end_idx = (i + 1) * text_data_len // num_chunks
-            chunk = text_data[start_idx:end_idx]
+    @property
+    def device(self):
+        """
+        Property to get the device of the model parameters.
 
-            # Tokenize the chunk using dna_tokenizer
-            tokenized_chunk = dna_tokenizer(chunk, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
+        Returns:
+            device: Device of the model parameters.
+        """
+        return next(self.parameters()).device
+    
 
-            # Save the tokenized chunk to a file
-            filename = os.path.join(cache_folder, f"chunk_{i}.pt")
-            torch.save(tokenized_chunk, filename)
+def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: int = 42) -> Tuple[str, str]:
+    """
+    Split a text file into train and eval sets based on the split ratio.
 
-    # Load and concatenate all the datasets from the temporary folder
-    tokenized_datasets = []
-    for i in tqdm(range(num_chunks), desc="Loading tokenized datasets"):
-        filename = os.path.join(cache_folder, f"chunk_{i}.pt")
-        tokenized_chunk = torch.load(filename)
+    Args:
+        input_file_path (str): Path to the input text file.
+        split_ratio (float): Ratio to split the data into train and eval sets.
+        random_seed (int): Random seed for reproducibility.
 
-        # Create a DNADataset from the tokenized chunk
-        dna_dataset_chunk = DNADataset(tokenized_chunk)
-
-        # Append the dataset to the list
-        tokenized_datasets.append(dna_dataset_chunk)
-
-    # Concatenate all the datasets into a single large dataset
-    concatenated_dataset = ConcatDataset(tokenized_datasets)
-
-    return concatenated_dataset
-
-
-def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
+    Returns:
+        Tuple[str, str]: Paths to the train and eval text files.
+    """
     # Set the random seed for reproducibility
     random.seed(random_seed)
+
     # Read lines from the input file
     with open(input_file_path, 'r', encoding='utf-8') as file:
         lines = file.readlines()
@@ -186,8 +215,8 @@ def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
     # Split the lines into train and eval sets
     train_lines = lines[:split_index]
     eval_lines = lines[split_index:]
-    print(f"训练集中含有的碱基的长度{len(train_lines) * 512}")
-    print(f"验证集中含有的碱基的长度{len(eval_lines) * 512}")
+    print(f"Length of bases in the training set: {len(train_lines) * 512}")
+    print(f"Length of bases in the evaluation set: {len(eval_lines) * 512}")
 
     # Define output file paths
     train_file_path = os.path.join(os.path.dirname(input_file_path), 'train.txt')
@@ -200,35 +229,98 @@ def split_txt_file(input_file_path, split_ratio=0.8, random_seed=42):
     # Write eval lines to eval file
     with open(eval_file_path, 'w', encoding='utf-8') as eval_file:
         eval_file.writelines(eval_lines)
-    print(f"训练集的保存的路径是{train_file_path}")
-    print(f"验证集保存的路径是{eval_file_path}")
+    print(f"Train set saved at: {train_file_path}")
+    print(f"Evaluation set saved at: {eval_file_path}")
 
     return train_file_path, eval_file_path
 
-class ChunkedDNADataset(IterableDataset):
-    def __init__(self, tokenizer, text_data, chunk_size=1000, max_length=512):
-        self.tokenizer = tokenizer
-        self.text_data = text_data
-        self.chunk_size = chunk_size
-        self.max_length = max_length
 
-        # Calculate the total number of chunks
-        self.num_chunks = (len(self.text_data) + self.chunk_size - 1) // self.chunk_size
+def evaluate_mlm(model, data_collator, eval_dataset):
+    """
+    Evaluate the masked language model on the evaluation dataset.
 
-    def __iter__(self):
-        for start_idx in tqdm(range(0, len(self.text_data), self.chunk_size), desc="Tokenizing dataset", total=self.num_chunks):
-            end_idx = min(start_idx + self.chunk_size, len(self.text_data))
-            chunk = self.text_data[start_idx:end_idx]
+    Args:
+        model: The masked language model to evaluate.
+        data_collator: Data collator for processing batches.
+        eval_dataset: Evaluation dataset for evaluation.
 
-            # Tokenize the chunk using dna_tokenizer
-            tokenized_chunk = self.tokenizer(chunk, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
+    Returns:
+        accuracy: Accuracy of the model on the evaluation dataset.
+        perplexity: Perplexity of the model on the evaluation dataset.
+    """
+    model.eval()
+    eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=data_collator)
 
-            # Create a DNADataset from the tokenized chunk
-            dna_dataset_chunk = DNADataset(tokenized_chunk)
+    total_accuracy = 0
+    total_loss = 0
+    total_examples = 0
 
-            yield dna_dataset_chunk
+    for batch in eval_dataloader:
+        with torch.no_grad():
+            outputs = model(**{k: v.to(model.device) for k, v in batch.items()})
+            predictions = torch.argmax(outputs.logits, dim=-1)
+            labels = batch['labels'].to(model.device)
+            mask = labels != -100  # Only consider masked tokens for accuracy
+
+            # Accuracy
+            correct_predictions = (predictions == labels) & mask
+            total_accuracy += correct_predictions.sum().item()
+            total_examples += mask.sum().item()
+
+            # Loss for perplexity
+            loss = outputs.loss
+            total_loss += loss.item() * batch['input_ids'].shape[0]  # Multiply by batch size
+
+    # Calculate metrics
+    accuracy = total_accuracy / total_examples
+    perplexity = torch.exp(torch.tensor(total_loss / len(eval_dataset)))
+
+    return accuracy, perplexity.item()
 
 
+def compute_mlm_metrics(p):
+    """
+    Compute metrics for masked language model predictions.
+
+    Args:
+        p: Prediction object containing predictions and labels.
+
+    Returns:
+        dict: Dictionary containing accuracy, precision, recall, and F1 score.
+    """
+    predictions = p.predictions.argmax(axis=2)  # Choose the label with the highest probability
+    labels = p.label_ids
+
+    # Calculate accuracy
+    accuracy = accuracy_score(labels.flatten(), predictions.flatten())
+
+    # Calculate precision, recall, and F1 score
+    precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
+
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
+
+
+def load_and_convert_tokenizer(load_path: str) -> PreTrainedTokenizerFast:
+    """
+    Load a tokenizer from a file and convert it to a PreTrainedTokenizerFast object.
+
+    Args:
+        load_path (str): Path to the tokenizer file.
+
+    Returns:
+        PreTrainedTokenizerFast: Converted PreTrainedTokenizerFast object.
+    """
+    new_tokenizer = Tokenizer.from_file(load_path)
+    # print(new_tokenizer.mask_token)
+
+    transformer_tokenizer = PreTrainedTokenizerFast(tokenizer_object=new_tokenizer, 
+                                                    mask_token="[MASK]", 
+                                                    unk_token='[UNK]', 
+                                                    pad_token='[PAD]', 
+                                                    sep_token='[SEP]', 
+                                                    cls_token='[CLS]', 
+                                                    padding_site='right')
+    return transformer_tokenizer
 
 @dataclass
 class ModelArguments:
@@ -277,95 +369,6 @@ class TrainingArguments(transformers.TrainingArguments):
     seed: int = field(default=42)
 
 
-class MLMNetwork(nn.Module):
-    def __init__(self, model_name_or_path="bert-base-uncased", cache_dir=None):
-        super(MLMNetwork, self).__init__()
-        self.base_model = BertForMaskedLM.from_pretrained(model_name_or_path, cache_dir=cache_dir)
-
-    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-        outputs = self.base_model(input_ids=input_ids, 
-                                  attention_mask=attention_mask, 
-                                  labels=labels)
-        return outputs
-    @property
-    def device(self):
-        return next(self.parameters()).device
-    
-def evaluate_mlm(model, data_collator, eval_dataset):
-    model.eval()
-    eval_dataloader = DataLoader(eval_dataset, batch_size=8, collate_fn=data_collator)
-    
-    total_accuracy = 0
-    total_loss = 0
-    total_examples = 0
-
-    for batch in eval_dataloader:
-        with torch.no_grad():
-            outputs = model(**{k: v.to(model.device) for k, v in batch.items()})
-            predictions = torch.argmax(outputs.logits, dim=-1)
-            labels = batch['labels'].to(model.device)
-            mask = labels != -100  # Only consider masked tokens for accuracy
-            
-            # Accuracy
-            correct_predictions = (predictions == labels) & mask
-            total_accuracy += correct_predictions.sum().item()
-            total_examples += mask.sum().item()
-
-            # Loss for perplexity
-            loss = outputs.loss
-            total_loss += loss.item() * batch['input_ids'].shape[0]  # Multiply by batch size
-
-    # Calculate metrics
-    accuracy = total_accuracy / total_examples
-    perplexity = torch.exp(torch.tensor(total_loss / len(eval_dataset)))
-
-    return accuracy, perplexity.item()
-
-
-def compute_mlm_metrics(p):
-    predictions = p.predictions.argmax(axis=2)  # 选择预测的最高概率的标签
-    labels = p.label_ids
-
-    # 计算准确率
-    accuracy = accuracy_score(labels.flatten(), predictions.flatten())
-
-    # 计算精确度、召回率、F1 分数
-    precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
-
-    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
-
-
-def load_and_split_dataset(txt_file_path, split_ratio=0.2, random_seed=42):
-    # Example usage:
-    print(f"Load data from {txt_file_path}")
-    train_file, eval_file = split_txt_file(txt_file_path, split_ratio, random_seed)
-    print(f"Train file created: {train_file}")
-    print(f"Eval file created: {eval_file}")
-    # 加载数据集
-    # data_files = {"train": train_file, "test": eval_file}
-    # dataset = load_dataset("text", data_files=data_files)
-    # # 转化为PyTorch Dataset
-    # train_dataset = dataset['train']
-    # eval_dataset = dataset['test']
-    return train_file, eval_file
-
-
-def load_and_convert_tokenizer(load_path):
-    new_tokenizer = Tokenizer.from_file(load_path)
-    # print(new_tokenizer.mask_token)
-    
-    transformer_tokenizer = PreTrainedTokenizerFast(tokenizer_object=new_tokenizer, 
-                                                    mask_token = "[MASK]", 
-                                                    unk_token = '[UNK]', 
-                                                    pad_token = '[PAD]', 
-                                                    sep_token = '[SEP]', 
-                                                    cls_token = '[CLS]', 
-                                                    padding_site='right')
-    return transformer_tokenizer
-
-
-
-
 
     
 if __name__ == "__main__":
@@ -379,24 +382,15 @@ if __name__ == "__main__":
         logging_dir='./logs',
     )
 
-    # 替换成你的文件路径和其他参数
-    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-    train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
-
     # 加载自己的tokenizer
     model_name_or_path = "../tokenizer/save_json/config.json"
     dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
+    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
 
-
-    # 这里是函数分块
-    # dna_train_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=train_dataset['text'], num_chunks=10)
-    # dna_eval_dataset = tokenize_and_concat_dataset(dna_tokenizer=dna_tokenizer, text_data=eval_dataset['text'], num_chunks=10)
-    # 这里是函数分块
+    txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
+    train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
     dna_train_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=train_file_path, batch_size=batch_size)
     dna_eval_dataset = LineByLineTextDataset(tokenizer=dna_tokenizer, file_path=eval_file_path, batch_size=batch_size)
-
-    # data_collator = DataCollatorForLanguageModeling(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
-    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
 
     # 加载model
     model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
