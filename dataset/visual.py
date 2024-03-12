@@ -19,7 +19,7 @@ def select_random_lines(input_file, output_file, ratio):
 
 
 
-def process_sequences(df):
+def process_sequences(df, line_length:int = 512):
     """
     Process DNA sequences from the DataFrame.
 
@@ -32,8 +32,8 @@ def process_sequences(df):
     concatenated_sequence = ''.join(df['Sequence'])
 
     split_sequences = []
-    for i in tqdm(range(0, len(concatenated_sequence), 512), desc="Processing"):
-        sequence_chunk = concatenated_sequence[i:i + 512]
+    for i in tqdm(range(0, len(concatenated_sequence), line_length), desc="Processing"):
+        sequence_chunk = concatenated_sequence[i:i + line_length]
         if sequence_chunk.count('N') / len(sequence_chunk) <= 0.15:
             split_sequences.append(sequence_chunk)
 
@@ -50,13 +50,13 @@ def process_and_save_file(input_path, output_path):
         output_file.writelines(filtered_lines)
 
 
-def main(csv_file_path:str = "", txt_output_path: str = ""):
+def main(csv_file_path:str = "", txt_output_path: str = "", line_length:int = 512):
 
     dataframe = pd.read_csv(csv_file_path)
     print(dataframe.head())
     print(f"Shape of the DataFrame: {dataframe.shape}")
 
-    resulting_text = process_sequences(dataframe)
+    resulting_text = process_sequences(dataframe, line_length)
     with open(txt_output_path, 'w') as file:
         file.write(resulting_text)
 
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     txt_output_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
     # small_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
 
-    main(csv_file_path = csv_file_path, txt_output_path =txt_output_path)
+    main(csv_file_path = csv_file_path, txt_output_path =txt_output_path, line_length=512)
     # 示例用法：选择原文件的30%的行并保存到新文件
     # select_random_lines(txt_output_path, small_path, 0.5)
 
