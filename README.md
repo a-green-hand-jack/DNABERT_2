@@ -1,9 +1,11 @@
-# DNABERT-2: Efficient Foundation Model and Benchmark for Multi-Species Genome
+# Hierarchical transformer for genomics
 
-The repo contains: 
+这里包括以下内容： 
 
-1. The official implementation of [DNABERT-2: Efficient Foundation Model and Benchmark for Multi-Species Genome](https://arxiv.org/abs/2306.15006)
-2. Genome Understanding Evaluation (GUE): a comprehensize benchmark containing 28 datasets for multi-species genome understanding benchmark.
+1. 如何搭建环境与运行程序
+2. 现存的问题
+3. 下一阶段的工作
+
 
 
 
@@ -19,15 +21,52 @@ The repo contains:
 
 
 
-## Update (2024/02/14)
+## Update (2024/03/12)
 
-We publish DNABERT-S,  a foundation model based on DNABERT-2 specifically designed for generating DNA embedding that naturally clusters and segregates genome of different species in the embedding space. Please check it out [here](https://github.com/Zhihan1996/DNABERT_S) if you are interested.
+大致实现了在大样本上的分批次的`pre-train`，使用的`model`是`DNABERT-V2`。采用的`dataset`是`whole human genome`。
 
 
 
-## 1. Introduction
+## 搭建环境与运行程序
 
-DNABERT-2 is a foundation model trained on large-scale multi-species genome that achieves the state-of-the-art performanan on $28$ tasks of the GUE benchmark. It replaces k-mer tokenization with BPE, positional embedding with Attention with Linear Bias (ALiBi), and incorporate other techniques to improve the efficiency and effectiveness of DNABERT.
+### 搭建conda环境
+
+自动化环境建立
+
+```cmd
+# clone 
+git clone https://github.com/a-green-hand-jack/DNABERT_2.git
+# conda create
+conda env create -f environment.yml
+```
+
+如果这样不成功，也可以手动处理
+
+```cmd
+# create and activate virtual python environment
+conda create -n dna python=3.8
+conda activate dna
+# clone 
+git clone https://github.com/a-green-hand-jack/DNABERT_2.git
+# install
+pip install tokenizers==0.12.1
+pip install transformers=4.29.2
+```
+
+目前来看`tokenizers`和`transformers`的版本比较关键，其他的库与之匹配即可。
+
+### 运行程序
+
+程序运行分为下面几个步骤：
+
+1. 下载数据
+2. 数据预处理
+3. `tokenizer`的训练
+4. `DNEBERT-V2`的训练
+
+#### 下载数据
+
+最原始的数据在
 
 
 
