@@ -3,96 +3,117 @@ from tokenizers import (
     pre_tokenizers,
     trainers,
     Tokenizer,
-    ByteLevelBPETokenizer
 )
-
-import datasets
-from datasets import load_dataset
-import os
-from tqdm import tqdm
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-            
-def train_tokenizer(tokenizer, sequence, trainer, chunk_size=1000, overlap=100):
-    start = 0
-    end = chunk_size
-    chunks = []
-    while start < len(sequence):
-        chunk = sequence[start:end]
-        chunks.append(chunk)
-        start += chunk_size - overlap
-        end = min(start + chunk_size, len(sequence))
-    chunks_number = len(chunks)
-    print(f"分割之后的列表的长度是{chunks_number}")
-    tokenizer.train_from_iterator(chunks, trainer=trainer,length=chunks_number)
+import os
+import shutil
+from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+from tqdm import tqdm
 
+class TokenizerTrainer:
+    def __init__(self, special_tokens=[], vocab_size=2000, data_folder = '', save_path = '', chunk_size: int = 2046, overlap_size: int=512):
 
+        self.tokenizer = Tokenizer(models.BPE())
+        self.tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        self.trainer = trainers.BpeTrainer(
+            vocab_size=vocab_size,
+            special_tokens=special_tokens,
+            show_progress=False
+        )
 
-def train_tokenizer_on_chunks(tokenizer, chunks_dir, trainer, chunk_size=10000000, overlap=512):
+        self.data_folder = data_folder
+        self.chunk_size = chunk_size
+        self.overlap_size = overlap_size
+        self.save_tokenizer_path = save_path
 
-    for file_name in tqdm(os.listdir(chunks_dir), desc="Processing Files", unit="file"):
+    def split_large_file(self, input_file, output_dir):
+        print(f"开始分隔文件{input_file}，并且保存临时文件夹{output_dir}, 分割后形成的小片段的长度是{self.chunk_size}，并且两个小片段之间的重叠长度是{self.overlap_size}")
+        with open(input_file, 'r') as file:
+            content = file.read()
+
+        num_chunks = (len(content) - (self.overlap_size * (self.chunk_size - 1))) // (self.chunk_size - self.overlap_size) + 1
         
-        if file_name.endswith(".txt"):
-            file_path = os.path.join(chunks_dir, file_name)
-            with open(file_path, 'r') as file:
-                sequence = file.read().strip()
-                tqdm_desc = f"Processing {file_name} (Length: {len(sequence)})"
-                tqdm.write(tqdm_desc)  # 更新进度条描述
-                train_tokenizer(tokenizer, sequence, trainer, chunk_size, overlap)
+        chunks = []
+
+        for i in tqdm(range(0, len(content) - self.chunk_size + 1, self.chunk_size - self.overlap_size), total=num_chunks, desc="Processing Chunks", unit="chunk"):
+            chunk = content[i:i + self.chunk_size]
+            chunks.append(chunk)
+
+        os.makedirs("./temp/" + output_dir, exist_ok=True)
+
+        for i, chunk in enumerate(chunks):
+            output_file = os.path.join("./temp/" + output_dir, f"chunk_{i + 1}.txt")
+            with open(output_file, 'w') as output:
+                output.write(chunk)
+
+        print(f"预计形成{len(chunks)}个小片段")
+        return "./temp/" + output_dir
 
 
 
+    def train_tokenizer_on_chunks(self, folder_path):
+        
+        # 滑动提取器的步长
+        
+        file_paths = [os.path.join(folder_path, file_name) for file_name in os.listdir(folder_path) if file_name.endswith(".txt")]
+        # stride = len(file_paths) // 10
+        print(f"从{folder_path}中提取信息, 有{len(file_paths)}个文件夹，也就是字段")
 
-def save_tokenizer(tokenizer, save_path):
-    os.makedirs(save_path, exist_ok=True)
-    print(f"Creating directory: {save_path}")
-    save_path = os.path.join(save_path, "config.json")
-    tokenizer.save(save_path) # 这种保存方式得到是一个json文件，虽然也包括了一切需要的信息，但是不能直接被RobertaTokenizerFast.from_pretrained 接受,但是可以使用：
+         # 使用 tqdm 添加进度条
+        progress_bar = tqdm(total=len(file_paths), desc="Training Tokenizer", unit="file")
 
-    # tokenizer.model.save(save_path) # 这种方法保存是一个merges.txt+vocab.json，可以被RobertaTokenizerFast.from_pretrained直接接受，采用下面这种方法加载：
+        # 遍历整个文件路径列表
+        for file_path in file_paths:
+            # 训练当前文件内容
+            self.tokenizer.train([file_path], trainer=self.trainer)
 
-    
+            # 更新进度条
+            progress_bar.update(1)
 
-def main(data_path:str = "",
-         save_path:str = "",
-         special_tokens:list = [],
-         vocab_size:int = int(2^8),
-         chunk_size:int = int(2^30),
-         overlap:int = int(2^12)):
-    # 初始化
-    tokenizer = Tokenizer(models.BPE())
-    # pre-tokenization
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        # 完成训练，关闭进度条
+        progress_bar.close()
+            # break
 
-    # 训练分词器
-    print(f"增加的特殊token有：{special_tokens}")
-    print(f"增加了一下指导性设定：字典的大小：{vocab_size}")
-    print(f"一次批次的长度是{chunk_size}")
-    print(f"重叠的长度是{overlap}")
-    trainer = trainers.BpeTrainer(
-        vocab_size=vocab_size,
-        special_tokens=special_tokens,
-        show_progress=False,
-    )
-    # 训练分词器
-    train_tokenizer_on_chunks(tokenizer, data_path, trainer, chunk_size, overlap)
-    # 保存分词器
-    save_tokenizer(tokenizer, save_path)
+        # 保存训练好的分词器
+        # self.save_tokenizer()
+
+
+    def save_tokenizer(self):
+        os.makedirs(self.save_tokenizer_path, exist_ok=True)
+        print(f"Creating directory: {self.save_tokenizer_path}")
+        save_path = os.path.join(self.save_tokenizer_path, "config.json")
+        self.tokenizer.save(save_path)
+
+    def split_and_train(self, file_name):
+        temp_folder = file_name.split("/")[-1].split(".")[0]
+        temp_file = self.split_large_file(file_name, temp_folder)
+        self.train_tokenizer_on_chunks(temp_file)
+        shutil.rmtree(temp_file)
+        print(f"Temporary folder {temp_folder} deleted")
+        
+
+    def train_and_save(self):
+        file_paths = [os.path.join(self.data_folder, file_name) for file_name in os.listdir(self.data_folder) if file_name.endswith(".txt")]
+
+        for file_path in file_paths:
+            print(f"现在正在处理{file_path}")
+            self.split_and_train(file_name=file_path)
+            break
+        self.save_tokenizer()
+
 
 
 if __name__ == "__main__":
-    data_path:str = "../../Datasets/Human_genome/huixin/24-txt/"
-    save_path:str = "./my_tokenizer/"
+    data_path:str = "../../Datasets/Human_genome/huixin/24-txt"
+    save_path:str = "./my_tokenizer2/"
     special_tokens = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"]
     vocab_size:int = 2 ** 12
-    chunk_size:int = 2 ** 10
-    overlap:int = 2 ** 6
+    chunk_size:int = 10000000
+    overlap_size:int = 2 ** 8
 
-    main(data_path=data_path, 
-         save_path=save_path, 
-         special_tokens=special_tokens, 
-         vocab_size=vocab_size, 
-         chunk_size=chunk_size,
-         overlap=overlap
-         )
+    # 调用示例
+    trainer = TokenizerTrainer(special_tokens=special_tokens, vocab_size=3000, chunk_size=chunk_size, overlap_size=overlap_size, data_folder=data_path, save_path=save_path)
+    trainer.train_and_save()
+
+    

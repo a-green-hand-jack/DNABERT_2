@@ -77,7 +77,7 @@ def main(data_path:str = "",
         show_progress=False,
     )
     # 分割大文件
-    temp_folder = "./chunks"
+    temp_folder = "./chunks-chr1"
     split_large_file(data_path, temp_folder, chunk_size)
 
     # 训练分词器
@@ -89,8 +89,8 @@ def main(data_path:str = "",
     print(f"Temporary folder {temp_folder} deleted")
 
 if __name__ == "__main__":
-    data_path:str = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
-    save_path:str = "./my_tokenizer/"
+    data_path:str = "../../Datasets/Human_genome/huixin/24-txt/chr1.txt"
+    save_path:str = "./my_tokenizer-chr1/"
     special_tokens = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"]
     vocab_size:int = 2 ** 12
     chunk_size:int = 10000000
