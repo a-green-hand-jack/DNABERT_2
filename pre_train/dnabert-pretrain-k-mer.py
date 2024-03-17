@@ -59,6 +59,17 @@ def combine_tensors(tensor1, tensor2):
     combined_tensor = torch.cat((tensor1.flatten(), tensor2.flatten(), extra_value), dim=0)
     return combined_tensor
 
+def subtract_value_for_values(tensor, value_to_subtract):
+    """对张量中小于等于 value_to_subtract 的值进行减法操作"""
+    subtracted_tensor = tensor.clone()  # 复制输入张量，以避免修改原始张量
+    
+    # 使用 torch.where() 函数将小于等于 value_to_subtract 的值替换为相应的减法结果
+    subtracted_tensor = torch.where(subtracted_tensor <= 4, 
+                                    subtracted_tensor - value_to_subtract, 
+                                    subtracted_tensor)
+    
+    return subtracted_tensor
+
 def tokenize_sequence(tokenizer_high, tokenizer_low, sequence, high_token_len:int=6, low_token_len:int=3):
     # 计算两个tokenizer分词后的token数量
     tokens_high = tokenizer_high.tokenize(insert_spaces(sequence, high_token_len), add_special_tokens=True, truncation=True)
@@ -75,10 +86,15 @@ def tokenize_sequence(tokenizer_high, tokenizer_low, sequence, high_token_len:in
 
     # # 将token ID转换为tensor
     high_token_tensor = torch.tensor(high_token_ids, dtype=torch.long)
-    low_token_tensor = torch.tensor(low_token_ids, dtype=torch.long) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
+    low_token_tensor = subtract_value_for_values(torch.tensor(low_token_ids, dtype=torch.long), len(tokenizer_high.vocab)) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
+    
+    # print("观察 high-level 的 tenosr 形式：\n", high_token_tensor)
+    # print("观察 low-level 的 tensor 形式：\n", low_token_tensor)
 
     # 使用torch.cat()函数连接两个tensor
-    combined_tensor = combine_tensors(high_token_tensor, low_token_tensor)
+    # combined_tensor = combine_tensors(high_token_tensor, low_token_tensor)
+    combined_tensor = torch.cat((high_token_tensor, low_token_tensor), dim = 0)
+    # print("观察总和之后的:\n", combined_tensor)
 
     # return high_token_tensor, low_token_tensor
     return combined_tensor
@@ -137,7 +153,7 @@ class LineByLineTextDataset(Dataset):
 
         high_tokenized_tensor = tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
 
-        print("打印 high-level tokenized tensor:\n", high_tokenized_tensor)
+        # print("打印 high-level tokenized tensor:\n", high_tokenized_tensor)
         # print("打印 low-level tokenized tensor:\n", low_tokenized_tensor)
 
         # return {"high-level":{'input_ids': high_tokenized_tensor}, "low-level":{'inputs': low_tokenized_tensor}}
@@ -147,11 +163,7 @@ class LineByLineTextDataset(Dataset):
 
 @dataclass
 class DataCollatorForMLM(DataCollatorForLanguageModeling):
-
-    def __init__(self, high_low_tokenizers: tuple[PreTrainedTokenizerFast, PreTrainedTokenizerFast]):
-      self.high_low_tokenizers = high_low_tokenizers
-    #   self.age = age
-    def __call__(self, instances) -> Dict[str, torch.Tensor]:
+    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         """
         Collate function for masked language modeling.
 
@@ -161,49 +173,17 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         Returns:
             Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
         """
-        def split_combined_tensor(combined_tensor):
-            """将组合的张量拆分成原始张量和分割点，这里我**约定**把high-level放到了low-level的前面了"""
-            # print(combined_tensor['input_ids'])
-            split_point = combined_tensor['input_ids'][-1].item()  # 提取额外的值作为分割点
-            # print(split_point)
-            tensor1 = combined_tensor['input_ids'][:split_point] # 通过分割点拆分第一个张量
-            tensor2 = combined_tensor['input_ids'][split_point:-1] # 通过分割点拆分第二个张量
-            return tensor1, tensor2
 
-        high_tokenizer, low_tokenizer = self.high_low_tokenizers
-        # print("分离前：\n",instances)
-        high_instances = []
-        low_instances = []
-        for instance in instances:
-            high_instance, low_instance = split_combined_tensor(instance)
-            high_instances.append(high_instance)
-            low_instances.append(low_instance)
-            
-        # print("分离后:\n{}".format({'high-level':high_instances, 'low-level':low_instances}))
-        # instances = {'high-level':instances[0], 'low-level':instances[1]}
-
-        high_input_ids, high_labels, high_attention_mask = self.mask_tokens(high_instances, mlm_probability=0.15,high_or_low_tokenizer=high_tokenizer)
-        low_input_ids, low_labels, low_attention_mask = self.mask_tokens(low_instances, mlm_probability=0.15, high_or_low_tokenizer=low_tokenizer)
-
-        # print("input_ids shape:", high_input_ids.shape, low_input_ids.shape)
-        # print("labels shape:", high_labels.shape, low_labels.shape)
-        # print("mask attention shape:", high_attention_mask.shape, low_attention_mask.shape)
-        input_ids = torch.cat((high_input_ids, low_input_ids), dim=1)
-        labels = torch.cat((high_labels, low_labels), dim=1)
-        attention_mask = torch.cat((high_attention_mask, low_attention_mask), dim=1)
-        # print("打印ids：\n",high_input_ids)
-        # print("打印labels：\n", high_labels)
-        # print("打印attention mask:\n", attention_mask)
-        # break
+        input_ids, labels = self.mask_tokens(instances)
         return dict(
             input_ids=input_ids,
             labels=labels,
-            attention_mask=attention_mask,
+            attention_mask=input_ids.ne(1),
         )
 
     def mask_tokens(
-        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15, high_or_low_tokenizer: PreTrainedTokenizerFast=None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Mask tokens for masked language modeling.
 
@@ -215,15 +195,15 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
             Tuple[torch.Tensor, torch.Tensor]: Tuple containing input_ids and labels tensors.
         """
         input_ids = pad_sequence(
-            instances,
+            [instance['input_ids'] for instance in instances],
             batch_first=True,
-            padding_value=high_or_low_tokenizer.pad_token_id
+            padding_value=self.tokenizer.pad_token_id
         )
         labels = input_ids.clone()
 
         probability_matrix = torch.full(input_ids.shape, mlm_probability)
         special_tokens_mask = [
-            high_or_low_tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
         ]
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
 
@@ -231,15 +211,13 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         labels[~masked_indices] = -100  # We only compute loss on masked tokens
 
         indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
-        input_ids[indices_replaced] = high_or_low_tokenizer.convert_tokens_to_ids(high_or_low_tokenizer.mask_token)
+        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
 
         indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(high_or_low_tokenizer), input_ids.shape, dtype=torch.long)
+        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
         input_ids[indices_random] = random_words[indices_random]
 
-        attention_mask = input_ids.ne(high_or_low_tokenizer.pad_token_id)
-
-        return input_ids, labels, attention_mask
+        return input_ids, labels
 
 
 class MLMNetwork(nn.Module):
@@ -457,11 +435,12 @@ class TrainingArguments(transformers.TrainingArguments):
     
 if __name__ == "__main__":
 
-    model_args = ModelArguments(model_name_or_path="../zhihan1996/DNA_bert_6")
-    batch_size = 1
+    # model_args = ModelArguments(model_name_or_path="../zhihan1996/DNA_bert_6")
+    model_args = ModelArguments()
+    batch_size = 2
     training_args = TrainingArguments(
         output_dir='./dnabert_6/results',
-        num_train_epochs=1,
+        num_train_epochs=2,
         per_device_train_batch_size=batch_size,
         logging_dir='./dnabert_6/logs',
     )
@@ -471,7 +450,10 @@ if __name__ == "__main__":
     high_dna_tokenizer = load_and_convert_tokenizer(high_model_name_or_path)
     low_model_name_or_path = "../tokenizer/dnabert-config/bert-config-3/vocab.txt"
     low_dna_tokenizer = load_and_convert_tokenizer(low_model_name_or_path)
-    data_collator = DataCollatorForMLM(high_low_tokenizers=(high_dna_tokenizer, low_dna_tokenizer))
+    model_name_or_path = "../tokenizer/dnabert-config/high-low-63-vocab.txt"
+    dna_tokenizer = load_and_convert_tokenizer(low_model_name_or_path)
+    # data_collator = DataCollatorForMLM(high_low_tokenizers=(high_dna_tokenizer, low_dna_tokenizer))
+    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
 
     txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
     train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
