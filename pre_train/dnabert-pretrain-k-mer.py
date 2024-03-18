@@ -3,6 +3,7 @@
 import os
 import random
 from typing import Optional, Dict, Sequence, Tuple, List, Union, Any
+import pdb
 
 import numpy as np
 import torch
@@ -28,77 +29,17 @@ from transformers import (
     PreTrainedTokenizerFast,
     PreTrainedTokenizer,
     DataCollatorForLanguageModeling,
-    BertTokenizer
+    BertTokenizer,
+    BertForPreTraining, 
+    BertTokenizerFast
 )
-
+ 
 from datasets import load_dataset
 from tokenizers import Tokenizer
 from dataclasses import dataclass, field
 
 from multiprocessing import Pool
 import pickle
-
-def insert_spaces(dna_sequence, interval):
-    # 初始化结果字符串
-    result = ""
-    
-    # 遍历 DNA 序列
-    for i, base in enumerate(dna_sequence):
-        # 每隔指定间隔插入一个空格
-        if i % interval == 0 and i != 0:
-            result += " "
-        # 添加当前碱基
-        result += base
-    
-    return result
-
-def combine_tensors(tensor1, tensor2):
-    """将两个张量组合成一个张量，并在最后添加一个额外的值作为分隔符"""
-    split_point = tensor1.numel()
-    extra_value = torch.tensor([split_point])  # 分割点作为额外的值
-    combined_tensor = torch.cat((tensor1.flatten(), tensor2.flatten(), extra_value), dim=0)
-    return combined_tensor
-
-def subtract_value_for_values(tensor, value_to_subtract):
-    """对张量中小于等于 value_to_subtract 的值进行减法操作"""
-    subtracted_tensor = tensor.clone()  # 复制输入张量，以避免修改原始张量
-    
-    # 使用 torch.where() 函数将小于等于 value_to_subtract 的值替换为相应的减法结果
-    subtracted_tensor = torch.where(subtracted_tensor <= 4, 
-                                    subtracted_tensor - value_to_subtract, 
-                                    subtracted_tensor)
-    
-    return subtracted_tensor
-
-def tokenize_sequence(tokenizer_high, tokenizer_low, sequence, high_token_len:int=6, low_token_len:int=3):
-    # 计算两个tokenizer分词后的token数量
-    tokens_high = tokenizer_high.tokenize(insert_spaces(sequence, high_token_len), add_special_tokens=True, truncation=True)
-    tokens_low = tokenizer_low.tokenize(insert_spaces(sequence, low_token_len), add_special_tokens=True, truncation=True)
-
-    # print("观察 high-leveltokenize的结果:\n", tokens_high)
-    # print("观察 low-leveltokenize的结果:\n", tokens_low)
-
-    # 将token转换为对应的token ID
-    high_token_ids = tokenizer_high.convert_tokens_to_ids(tokens_high)
-    low_token_ids = tokenizer_low.convert_tokens_to_ids(tokens_low)
-    # print("观察 high-level 从token到ids后的ids：\n", high_token_ids)
-    # print("观察 low-level 从tokens到ids后的ids：\n", low_token_ids)
-
-    # # 将token ID转换为tensor
-    high_token_tensor = torch.tensor(high_token_ids, dtype=torch.long)
-    low_token_tensor = subtract_value_for_values(torch.tensor(low_token_ids, dtype=torch.long), len(tokenizer_high.vocab)) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
-    
-    # print("观察 high-level 的 tenosr 形式：\n", high_token_tensor)
-    # print("观察 low-level 的 tensor 形式：\n", low_token_tensor)
-
-    # 使用torch.cat()函数连接两个tensor
-    # combined_tensor = combine_tensors(high_token_tensor, low_token_tensor)
-    combined_tensor = torch.cat((high_token_tensor, low_token_tensor), dim = 0)
-    # print("观察总和之后的:\n", combined_tensor)
-
-    # return high_token_tensor, low_token_tensor
-    return combined_tensor
-
 class LineByLineTextDataset(Dataset):
     def __init__(self, file_path: str , high_tokenizer: PreTrainedTokenizer, low_tokenizer: PreTrainedTokenizer, high_len:int, low_len:int,):
         """
@@ -122,6 +63,59 @@ class LineByLineTextDataset(Dataset):
         self.low_len = low_len
 
         print(f"Length of the dataset is {len(self.lines)}")
+        
+    def insert_spaces(self, dna_sequence, interval):
+        # 初始化结果字符串
+        result = ""
+        
+        # 遍历 DNA 序列
+        for i, base in enumerate(dna_sequence):
+            # 每隔指定间隔插入一个空格
+            if i % interval == 0 and i != 0:
+                result += " "
+            # 添加当前碱基
+            result += base
+        
+        return result
+
+    def combine_tensors(self, tensor1, tensor2):
+        """将两个张量组合成一个张量，并在最后添加一个额外的值作为分隔符"""
+        split_point = tensor1.numel()
+        extra_value = torch.tensor([split_point])  # 分割点作为额外的值
+        combined_tensor = torch.cat((tensor1.flatten(), tensor2.flatten(), extra_value), dim=0)
+        return combined_tensor
+
+    def subtract_value_for_values(self, tensor, value_to_subtract):
+        """对张量中小于等于 value_to_subtract 的值进行减法操作"""
+        subtracted_tensor = tensor.clone()  # 复制输入张量，以避免修改原始张量
+        
+        # 使用 torch.where() 函数将小于等于 value_to_subtract 的值替换为相应的减法结果
+        subtracted_tensor = torch.where(subtracted_tensor <= 5, 
+                                        subtracted_tensor - value_to_subtract, 
+                                        subtracted_tensor)
+        
+        return subtracted_tensor
+
+    def tokenize_sequence(self, tokenizer_high, tokenizer_low, sequence, high_token_len=6, low_token_len=3):
+        # 计算两个tokenizer分词后的token数量
+        tokens_high = tokenizer_high.tokenize(self.insert_spaces(sequence, high_token_len))
+        tokens_low = tokenizer_low.tokenize(self.insert_spaces(sequence, low_token_len))
+
+        # 将token转换为对应的token ID
+        high_token_ids = tokenizer_high.convert_tokens_to_ids(tokens_high)
+        low_token_ids = tokenizer_low.convert_tokens_to_ids(tokens_low)
+
+        # 将token ID转换为tensor
+        high_token_tensor = torch.tensor(high_token_ids, dtype=torch.long)
+        low_token_tensor = self.subtract_value_for_values(torch.tensor(low_token_ids, dtype=torch.long), len(tokenizer_high.vocab)) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
+
+        # 使用torch.cat()函数连接两个tensor
+        combined_tensor = torch.cat((high_token_tensor, low_token_tensor), dim=0)
+
+
+        return combined_tensor
+
+
 
     def __len__(self) -> int:
         """
@@ -151,7 +145,7 @@ class LineByLineTextDataset(Dataset):
         if not lines:
             raise IndexError(f"Index {index} is out of bounds.")
 
-        high_tokenized_tensor = tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
+        high_tokenized_tensor = self.tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
 
         # print("打印 high-level tokenized tensor:\n", high_tokenized_tensor)
         # print("打印 low-level tokenized tensor:\n", low_tokenized_tensor)
@@ -159,7 +153,6 @@ class LineByLineTextDataset(Dataset):
         # return {"high-level":{'input_ids': high_tokenized_tensor}, "low-level":{'inputs': low_tokenized_tensor}}
         # return {"high-level": {'input_ids': high_tokenized_tensor}, "low-level": {'input_ids': low_tokenized_tensor}}
         return {"input_ids":high_tokenized_tensor}
-
 
 @dataclass
 class DataCollatorForMLM(DataCollatorForLanguageModeling):
@@ -173,52 +166,63 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         Returns:
             Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
         """
-
-        input_ids, labels = self.mask_tokens(instances)
-        return dict(
-            input_ids=input_ids,
-            labels=labels,
-            attention_mask=input_ids.ne(1),
-        )
-
-    def mask_tokens(
-        self, instances: Sequence[Dict[str, torch.Tensor]], mlm_probability: float = 0.15
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Mask tokens for masked language modeling.
-
-        Args:
-            instances (Sequence[Dict[str, torch.Tensor]]): List of instances containing input tensors.
-            mlm_probability (float): Probability of masking tokens.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Tuple containing input_ids and labels tensors.
-        """
-        input_ids = pad_sequence(
-            [instance['input_ids'] for instance in instances],
+        instances = [instance['input_ids'] for instance in instances]
+        # print(instances)
+        # print(self.tokenizer.pad_token_id)
+        # import torch
+        inputs = pad_sequence(
+            instances,
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id
         )
-        labels = input_ids.clone()
 
-        probability_matrix = torch.full(input_ids.shape, mlm_probability)
+        input_ids, labels, attention_masks = self.mask_tokens(inputs)
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=attention_masks,
+        )
+    
+    def mask_tokens(self, inputs: Any) -> Tuple[Any, Any, Any]:
+        """
+        Prepare masked tokens inputs/labels/attention_mask for masked language modeling: 80% MASK, 10% random, 10%
+        original. N-gram not applied yet.
+        """
+        if self.tokenizer.mask_token is None:
+            raise ValueError(
+                "This tokenizer does not have a mask token which is necessary for masked language modeling. Remove the"
+                " --mlm flag if you want to use this tokenizer."
+            )
+
+        labels = inputs.clone()
+        # We sample a few tokens in each sequence for masked-LM training (with probability args.mlm_probability defaults to 0.15 in Bert/RoBERTa)
+        probability_matrix = torch.full(labels.shape, self.mlm_probability)
         special_tokens_mask = [
-            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in input_ids.tolist()
+            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
         ]
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
-
+        if self.tokenizer._pad_token is not None:
+            padding_mask = labels.eq(self.tokenizer.pad_token_id)
+            probability_matrix.masked_fill_(padding_mask, value=0.0)
         masked_indices = torch.bernoulli(probability_matrix).bool()
-        labels[~masked_indices] = -100  # We only compute loss on masked tokens
+        # probability be `1` (masked), however in albert model attention mask `0` means masked, revert the value
+        attention_mask = (~masked_indices).float()
+        if self.tokenizer._pad_token is not None:
+            attention_padding_mask = labels.eq(self.tokenizer.pad_token_id)
+            attention_mask.masked_fill_(attention_padding_mask, value=1.0)
+        labels[~masked_indices] = -100  # We only compute loss on masked tokens, -100 is default for CE compute
 
-        indices_replaced = torch.bernoulli(torch.full(input_ids.shape, 0.8)).bool() & masked_indices
-        input_ids[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+        # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
+        indices_replaced = torch.bernoulli(torch.full(labels.shape, 0.8)).bool() & masked_indices
+        inputs[indices_replaced] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
 
-        indices_random = torch.bernoulli(torch.full(input_ids.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), input_ids.shape, dtype=torch.long)
-        input_ids[indices_random] = random_words[indices_random]
+        # 10% of the time, we replace masked input tokens with random word
+        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
+        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
+        inputs[indices_random] = random_words[indices_random]
 
-        return input_ids, labels
-
+        # The rest of the time (10% of the time) we keep the masked input tokens unchanged
+        return inputs, labels, attention_mask
 
 class MLMNetwork(nn.Module):
     def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
@@ -396,7 +400,6 @@ class ModelArguments:
     lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
     lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
         
-
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
@@ -435,8 +438,7 @@ class TrainingArguments(transformers.TrainingArguments):
     
 if __name__ == "__main__":
 
-    # model_args = ModelArguments(model_name_or_path="../zhihan1996/DNA_bert_6")
-    model_args = ModelArguments()
+    
     batch_size = 2
     training_args = TrainingArguments(
         output_dir='./dnabert_6/results',
@@ -451,9 +453,12 @@ if __name__ == "__main__":
     low_model_name_or_path = "../tokenizer/dnabert-config/bert-config-3/vocab.txt"
     low_dna_tokenizer = load_and_convert_tokenizer(low_model_name_or_path)
     model_name_or_path = "../tokenizer/dnabert-config/high-low-63-vocab.txt"
-    dna_tokenizer = load_and_convert_tokenizer(low_model_name_or_path)
+    dna_tokenizer = load_and_convert_tokenizer(model_name_or_path)
     # data_collator = DataCollatorForMLM(high_low_tokenizers=(high_dna_tokenizer, low_dna_tokenizer))
+    print(dna_tokenizer.pad_token_id)
     data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer)
+    
+    # pdb.set_trace()  # 设置断点
 
     txt_file_path = "../../Datasets/Human_genome/huixin/24_chromosomes-002.txt"
     train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)
@@ -461,7 +466,14 @@ if __name__ == "__main__":
     dna_eval_dataset = LineByLineTextDataset(file_path=eval_file_path, high_len=6, low_len=3, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer)
 
     # 加载model
-    model = MLMNetwork(model_name_or_path=model_args.model_name_or_path)
+    # model_args = ModelArguments(model_name_or_path="../zhihan1996/DNA_bert_6")
+    # model_args = ModelArguments()
+    model = BertForPreTraining.from_pretrained("bert-base-uncased")
+    # Initialize BERT model and tokenizer
+    # model = BertForPreTraining.from_pretrained('bert-base-uncased')
+    # model_tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased', tokenizer_object=dna_tokenizer)
+    # data_collator = DataCollatorForMLM(tokenizer=model_tokenizer)
+
 
     # 开始训练
     trainer = Trainer(
