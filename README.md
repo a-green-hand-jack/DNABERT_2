@@ -19,10 +19,6 @@
   - [搭建环境与运行程序](#搭建环境与运行程序)
     - [搭建conda环境](#搭建conda环境)
     - [运行程序](#运行程序)
-      - [下载数据](#下载数据)
-      - [数据预处理](#数据预处理)
-      - [tokenizer训练](#tokenizer训练)
-      - [model训练](#model训练)
   - [现在的问题](#现在的问题)
   - [近期的规划（2024-03-12）](#近期的规划2024-03-12)
 
@@ -72,28 +68,7 @@ pip install transformers=4.29.2
 3. `tokenizer`的训练
 4. `DNEBERT-V2`的训练
 
-#### 下载数据
-
-最原始的数据在[GENcode-human](https://www.gencodegenes.org/human/)中，具体的讲是这个**GRCh38.p14**。不过也可以直接从[这个链接](https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_45/GRCh38.p14.genome.fa.gz)中下载文件。
-
-#### 数据预处理
-
-然后进入`dataset`文件夹，运行`humanGenome.ipynb`，注意修改文件路径与保存路径；得到了对应的`csv`文件。
-
-同样在`dataset`文件夹中，进入`visual.py`文件，修改文件路径、规定每一行的长度，运行程序；得到了对应的`txt`文件。
-
-#### tokenizer训练
-
-进入`tokenizer`文件夹，进入`tokenizer.py`文件，修改`txt`文件路径，注意需要和上一步的保持一致；修改`voccab_size`来控制`bpe`后字典的大小，不过这里只是一个大概的约束；修改`chunke_size`这个控制分块训练时候的块的数量，对程序运行的速度很重要。
-
-> 这里为了和`model`训练中的`PreTrainedTokenizerFast`相对应，使用了`tokenizer.save(save_path)`，这里的`path`是一个`json`文件
-> 如果希望使用`RobertaTokenizerFast.from_pretrained`去接受，就需要使用`tokenizer.model.save(save_path)`去保存，这里的`path`是一个文件夹路径
-
-#### model训练
-
-调整相应的`model_name_or_path`的保存路径与并与对应的类型配对；调整相应的`txt_file_path`加载已经经过数据预处理的`txt`文件；在`train_file_path, eval_file_path = split_txt_file(txt_file_path, split_ratio=0.99, random_seed=42)`中设置`train_dataset`与`eval_dataset`的比例；设置`batch_size`。
-
-然后就可以进行训练了，如果没有意外，训练中数据的加载与分词应该是以`batch`为单位，如果`batch=32`，那么一次就会有32行数据进入`model`，具体一行是多少碱基在**数据预处理**阶段就已经决定了。
+> 具体的运行步骤请进入对应文件夹中查阅！！！
 
 ## 现在的问题
 

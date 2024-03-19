@@ -8,7 +8,7 @@
 
 ### 方法一
 
-> 这个方法截止到2024-03-17就已经废止了，放在这里只是为了以防万一😀
+> 这个方法是为了和`dnabert-pretrain-k-mer.py`配合
 
 进入`dataset`文件夹，运行`humanGenome.ipynb`，注意修改文件路径与保存路径；得到了对应的`csv`文件。
 
@@ -17,6 +17,8 @@
 ### 方法二
 
 > 这个方法来源于[GENA_LM](https://github.com/AIRI-Institute/GENA_LM/blob/main/src/gena_lm/genome_tools/create_corpus.py)
+>
+> 这个方法也是为了和`create_corpus.py`配合使用
 
 进入`dataset`文件夹，运行下面的命令，注意要使用对应的`gz`文件路径：
 
