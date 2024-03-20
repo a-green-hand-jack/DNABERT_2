@@ -229,6 +229,41 @@ class ModelArguments:
     lora_alpha: int = field(default=32, metadata={"help": "alpha for LoRA"})
     lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
     lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
+        
+
+@dataclass
+class TrainingArguments(transformers.TrainingArguments):
+    cache_dir: Optional[str] = field(default=None)
+    run_name: str = field(default="run")
+    optim: str = field(default="adamw_torch")
+    model_max_length: int = field(default=512, metadata={"help": "Maximum sequence length."})
+    gradient_accumulation_steps: int = field(default=1)
+    per_device_train_batch_size: int = field(default=8)
+    per_device_eval_batch_size: int = field(default=16)
+    num_train_epochs: int = field(default=1000)
+    fp16: bool = field(default=False)
+    logging_steps: int = field(default=100)
+    save_steps: int = field(default=500)
+    eval_steps: int = field(default=500)
+    evaluation_strategy: str = field(default="steps")
+    load_best_model_at_end: bool = field(default=True)     # load the best model when finished training (default metric is loss)
+    # metric_for_best_model: str = field(default="matthews_correlation") # the metric to use to compare models
+    greater_is_better: bool = field(default=True)           # whether the `metric_for_best_model` should be maximized or not
+    logging_strategy: str = field(default="steps")  # Log every "steps"
+    logging_steps: int = field(default=100)  # Log every 100 steps
+    warmup_steps: int = field(default=50)
+    weight_decay: float = field(default=0.01)
+    learning_rate: float = field(default=1e-4)
+    save_total_limit: int = field(default=50)
+    load_best_model_at_end: bool = field(default=True)
+    output_dir: str = field(default="/common/zhanh/cardioNet/output")
+    find_unused_parameters: bool = field(default=False)
+    checkpointing: bool = field(default=False)
+    dataloader_pin_memory: bool = field(default=False)
+    eval_and_save_results: bool = field(default=True)
+    save_model: bool = field(default=False)
+    seed: int = field(default=42)
+
     
 class MLMNetwork(nn.Module):
     def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
