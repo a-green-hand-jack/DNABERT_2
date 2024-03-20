@@ -546,6 +546,13 @@ if __name__ == "__main__":
         compute_metrics=compute_mlm_metrics
     )
     trainer.train()
+    # 指定保存路径
+    # model_save_path = os.path.join(args.output_dir, "final_model_save")
+    # trainer.save_model(model_save_path)
+    # 使用 save_pretrained 方法保存模型
+    model_save_path = os.path.join(args.output_dir, "final_model_save")
+    model.save_pretrained(model_save_path)
+
 
 
 
