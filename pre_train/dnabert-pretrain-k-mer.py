@@ -10,7 +10,11 @@ from transformers import (
     DataCollatorForLanguageModeling,
     BertTokenizer,
     BertForPreTraining, 
-    BertTokenizerFast
+    BertTokenizerFast,
+    TrainingArguments,
+    BertConfig, 
+    # LocalRationalAttention,
+    BertModel
 )
 from transformers.modeling_utils import PreTrainedModel, load_sharded_checkpoint, unwrap_model
 # from transformers.trainer_pt_utils import LabelSmoother
@@ -214,85 +218,6 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels, attention_mask
-
-
-
-# @dataclass
-# class ModelArguments:
-#     model_type: Optional[str] = field(default="dnabert")
-#     n_process: int = field(default=1, metadata={"help":"none"})
-#     overwrite_cache: bool = False
-#     model_name_or_path: Optional[str] = field(default="../zhihan1996/DNABERT-2-117M")
-#     use_lora: bool = field(default=False, metadata={"help": "whether to use LoRA"})
-#     lora_r: int = field(default=8, metadata={"help": "hidden dimension for LoRA"})
-#     lora_alpha: int = field(default=32, metadata={"help": "alpha for LoRA"})
-#     lora_dropout: float = field(default=0.05, metadata={"help": "dropout rate for LoRA"})
-#     lora_target_modules: str = field(default="Wqkv,mlp.wo,dense", metadata={"help": "where to perform LoRA"})
-        
-
-@dataclass
-class TrainingArguments(transformers.TrainingArguments):
-    # 模型缓存目录，默认为None
-    # cache_dir: Optional[str] = field(default=None)
-    # 训练过程的标识名称，默认为"run"
-    run_name: str = field(default="run")
-    # 优化器类型，默认为"adamw_torch"
-    optim: str = field(default="adamw_torch")
-    # 模型最大长度，默认为512
-    model_max_length: int = field(default=512, metadata={"help": "Maximum sequence length."})
-    # 梯度积累的步数，默认为1
-    gradient_accumulation_steps: int = field(default=1)
-    # 每个设备的训练批次大小，默认为8
-    per_device_train_batch_size: int = field(default=8)
-    # 每个设备的评估批次大小，默认为16
-    per_device_eval_batch_size: int = field(default=16)
-    # 训练轮数，默认为1000
-    num_train_epochs: int = field(default=1000)
-    # 是否使用混合精度训练，默认为False
-    fp16: bool = field(default=False)
-    # 训练过程中记录日志的步数，默认为100
-    logging_steps: int = field(default=1000)
-    # 保存模型的步数，默认为500；注意保存模型的步数需要时评估模型的步数的整数倍
-    save_steps: int = field(default=1000)
-    # 评估模型的步数，默认为500
-    eval_steps: int = field(default=100)
-    # 评估策略，默认为"steps"
-    '''
-    No: 表示不进行评估。选择这个选项意味着在训练过程中不会自动对模型进行验证，通常用于当外部验证逻辑被使用或者仅仅想要快速完成训练时。
-    Epoch: 每完成一次遍历训练数据集（即一个epoch）之后进行一次评估。这是一个比较常用的策略，因为它允许模型在看过所有训练数据一次后，对其性能进行一次整体评估。
-    Steps (前面已提及): 模型会在每个固定步数之后进行评估，这个步数由另一个参数eval_steps定义。这种策略允许在训练过程中更频繁地监控模型的性能，有助于更早地识别和响应模型训练中可能出现的问题。
-    在深度学习训练过程中，一个“step”通常指的是使用一个批次（batch）的数据进行一次前向传播和一次反向传播的过程。也就是说，每个step涉及到计算模型在一个批次数据上的损失，然后根据这个损失更新模型的权重。
-    因此，当讨论到评估策略为“steps”时，比如设置`eval_steps=100`，意味着每进行100个训练步骤（即处理了100个批次的数据并更新了模型100次）后，模型会在验证集上进行一次评估。这种方式可以让你在训练过程中频繁地监控模型的性能，而不必等到完成一个完整的epoch。
-    '''
-    evaluation_strategy: str = field(default="steps")
-    # 训练结束时是否加载最佳模型，默认为True
-    load_best_model_at_end: bool = field(default=True)
-    # 是否使用大于比较，默认为True
-    greater_is_better: bool = field(default=True)
-    # 日志记录策略，默认为"steps"
-    logging_strategy: str = field(default="steps")
-    # 梯度更新前的预热步数，默认为50
-    warmup_steps: int = field(default=50)
-    # 权重衰减，默认为0.01
-    weight_decay: float = field(default=0.01)
-    # 学习率，默认为1e-4
-    learning_rate: float = field(default=1e-4)
-    # 最大保存模型数，默认为50
-    save_total_limit: int = field(default=50)
-    # 训练时是否发现未使用的参数，默认为False
-    find_unused_parameters: bool = field(default=False)
-    # 是否进行模型检查点，默认为False
-    checkpointing: bool = field(default=False)
-    # 是否将数据加载到固定内存，默认为False
-    dataloader_pin_memory: bool = field(default=False)
-    # 评估并保存结果，默认为True
-    eval_and_save_results: bool = field(default=True)
-    # 是否保存模型，默认为False
-    save_model: bool = field(default=False)
-    # 随机数种子，默认为42
-    seed: int = field(default=42)
-
-
     
 class MLMNetwork(nn.Module):
     def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
@@ -597,8 +522,11 @@ if __name__ == "__main__":
     data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
     # 使用示例
     
-    model = BertForPreTraining.from_pretrained("bert-base-uncased")
-    print_processed_data_samples(dna_train_dataset, data_collator, dna_tokenizer, model)
+    # model = BertForPreTraining.from_pretrained("bert-base-uncased")   # 使用 base bert
+    model = BertForMaskedLM.from_pretrained("../zhihan1996/DNA_bert_6")    # 使用dnabert
+    # 为了使用LoRA
+    # model_with_lora = BertWithLoRA("../zhihan1996/DNA_bert_6")
+    print_processed_data_samples(dna_train_dataset, data_collator, dna_tokenizer, model,1)
 
     # 开始训练
     training_args = TrainingArguments(
@@ -606,8 +534,10 @@ if __name__ == "__main__":
         num_train_epochs=args.num_train_epochs,
         per_device_train_batch_size=args.per_device_train_batch_size,
         logging_dir=args.logging_dir,
+        evaluation_strategy="steps",    # please select one of ['no', 'steps', 'epoch']
+        eval_steps=500
     )
-    trainer = MyTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dna_train_dataset,
