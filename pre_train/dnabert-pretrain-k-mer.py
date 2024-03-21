@@ -498,8 +498,10 @@ def parse_args():
                         help="Logging directory for training logs")
     parser.add_argument("--num_train_epochs", type=int, default=2,
                         help="Number of training epochs")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=2,
+    parser.add_argument("--per_device_train_batch_size", type=int, default=16,
                         help="Training batch size per device")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8,
+                        help="Evaling batch size per device")
 
     args = parser.parse_args()
     return args
@@ -530,13 +532,28 @@ if __name__ == "__main__":
 
     # 开始训练
     training_args = TrainingArguments(
+        run_name="run",
+        optim="adamw_torch",
+        gradient_accumulation_steps=1,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_train_batch_size,
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
+        logging_strategy="steps",
+        logging_steps=1000,
         logging_dir=args.logging_dir,
         evaluation_strategy="steps",    # please select one of ['no', 'steps', 'epoch']
-        eval_steps=500
+        eval_steps=100,
+        load_best_model_at_end=True,
+        greater_is_better=True,
+        warmup_steps=50,
+        weight_decay=0.01,
+        learning_rate=1e-4,
+        save_total_limit=50,
+        dataloader_pin_memory=False,
+        seed=42
     )
+
     trainer = Trainer(
         model=model,
         args=training_args,
