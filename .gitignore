@@ -3,7 +3,9 @@
 models/*
 */wandb/*
 finetune/output
-zhihan1996
+zhihan1996/DNA_bert_3/pytorch_model.bin
+zhihan1996/DNA_bert_6/pytorch_model.bin
+zhihan1996/DNABERT-2-117M/pytorch_model.bin
 results
 zhihan1996.zip
 tokenizer/chunks
