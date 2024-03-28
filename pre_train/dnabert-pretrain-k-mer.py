@@ -165,6 +165,10 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         # print(instances)
         # print(self.tokenizer.pad_token_id)
         # import torch
+        # Truncate sequences that exceed the maximum length
+        if len(instances) > self.tokenizer.model_max_length:
+            instances = instances[:, :self.tokenizer.model_max_length]
+            
         inputs = pad_sequence(
             instances,
             batch_first=True,
@@ -340,8 +344,9 @@ def compute_mlm_metrics(p):
 
     return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
-def print_tokenizer_features(tokenizer):
+def print_tokenizer_features(tokenizer, tokenizer_name:str='default tokenizer'):
     # 打印特殊token及其对应的id
+    print(f"===========================这里打印显示{tokenizer_name}的一些基本情况============================")
     print("Special tokens:")
     print(f"Pad token: {tokenizer.pad_token_id}, {tokenizer.pad_token}")
     print(f"CLS token: {tokenizer.cls_token_id}, {tokenizer.cls_token}")
@@ -350,7 +355,7 @@ def print_tokenizer_features(tokenizer):
     print(f"SEP token: {tokenizer.sep_token_id}, {tokenizer.sep_token}")
     vocab_size = len(tokenizer)
     # 打印词汇表大小
-    print("词汇表大小:", vocab_size)
+    print("tokenizer 的词汇表大小是:", vocab_size)
 
     # 计算字典中token对应的最大长度和最小长度、平均长度
     max_token_len = max(len(token) for token in tokenizer.get_vocab().keys())
@@ -367,7 +372,10 @@ def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_sa
 
     # 随机选择num_samples个样本
     sample_indices = random.sample(range(len(dataset)), num_samples)
-    print("Randomly selected samples:")
+    # 打印model的全部设定
+    print('=============打印model的全部设定，也就是config==========================')
+    print(model.config)
+
     # 打印模型结构
     print("Show the strucature of the model")
     print(model)
@@ -380,30 +388,48 @@ def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_sa
     # 计算模型的可训练参数数量
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Number of trainable parameters:", trainable_params)
-    
+    # 打印模型使用的字典数量
+    num_embeddings = model.config.vocab_size
+    print("Number of embeddings in the model's vocabulary:", num_embeddings)
 
     for i, idx in enumerate(sample_indices):
+        print('*************打印第{}个例子的情况***************'.format(i))
         sample = dataset[idx]
 
         # 打印原始数据
         print(f"\nSample {idx + 1}:")
-        print("Original data:", sample)
+        print("\n Original data:\n", sample)
 
         # 使用data collator处理数据
         processed_data = data_collator([sample])
 
         # 打印处理后的数据
-        print("Processed data:", processed_data)
+        print("\n Processed data:\n", processed_data)
 
         # 解码处理后的数据
         decoded_text = tokenizer.batch_decode(processed_data['input_ids'], skip_special_tokens=True)
 
         # 打印解码后的文本
-        print("Decoded text:", decoded_text)
+        print("\n Decoded text:\n", decoded_text)
         
+        # 打印embedding（嵌入后的文本）
+        # Get embeddings
+        with torch.no_grad():
+            print("\n Embedding text shape:\n")
+            # 方法0：失败，因为BertForMaskedLM对象没有名为embeddings的属性
+            # embedding_token = model.embeddings(input_ids=processed_data['input_ids'])
+            # 方法1：使用模型的bert属性
+            bert_model = model.bert
+            embedding_output = bert_model.embeddings(input_ids=processed_data['input_ids'])
+
+            # 方法2：使用模型的get_input_embeddings()方法
+            # embedding_layer = model.get_input_embeddings()
+            # embedding_output = embedding_layer(processed_data['input_ids'])
+            print(embedding_output.shape)
+            
         # 打印model的输出
         output = model(**processed_data)
-        print("Out put of the model", output)
+        print("\n Out put of the model:\n", output)
 
 def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: int = 42) -> Tuple[str, str]:
     """
@@ -511,9 +537,11 @@ if __name__ == "__main__":
 
     # 加载自己的tokenizer
     high_dna_tokenizer = load_and_convert_tokenizer(args.high_model_path)
+    print_tokenizer_features(high_dna_tokenizer, "high dna tokenizer")
     low_dna_tokenizer = load_and_convert_tokenizer(args.low_model_path)
+    print_tokenizer_features(low_dna_tokenizer, "low dna tokenizer")
     dna_tokenizer = load_and_convert_tokenizer(args.model_path)
-    print_tokenizer_features(dna_tokenizer)
+    print_tokenizer_features(dna_tokenizer, "dna tokenizer")
 
     # 加载DNA 数据集
     train_file_path, eval_file_path = split_txt_file(args.data_path, split_ratio=0.8, random_seed=42)
@@ -525,7 +553,19 @@ if __name__ == "__main__":
     # 使用示例
     
     # model = BertForPreTraining.from_pretrained("bert-base-uncased")   # 使用 base bert
-    model = BertForMaskedLM.from_pretrained("../zhihan1996/DNA_bert_6")    # 使用dnabert
+    # model = BertForMaskedLM.from_pretrained("../zhihan1996/DNA_bert_6")    # 使用dnabert
+    # 从预训练模型的配置创建模型实例，但是又不会使用预训练的参数
+    config = BertConfig.from_pretrained("../zhihan1996/DNA_bert_6")
+    # 手动修改vocab_size属性为你想要的新值
+    new_vocab_size = len(low_dna_tokenizer) + len(high_dna_tokenizer)
+    config.vocab_size = new_vocab_size
+
+    # 确认修改后的配置
+    print("Modified config:", config)
+    model = BertForMaskedLM(config)
+
+    # 将模型权重参数初始化为随机值
+    model.init_weights()
     # 为了使用LoRA
     # model_with_lora = BertWithLoRA("../zhihan1996/DNA_bert_6")
     print_processed_data_samples(dna_train_dataset, data_collator, dna_tokenizer, model,1)
@@ -543,7 +583,7 @@ if __name__ == "__main__":
         logging_steps=1000,
         logging_dir=args.logging_dir,
         evaluation_strategy="steps",    # please select one of ['no', 'steps', 'epoch']
-        eval_steps=100,
+        eval_steps=1000,
         load_best_model_at_end=True,
         greater_is_better=True,
         warmup_steps=50,
@@ -551,7 +591,9 @@ if __name__ == "__main__":
         learning_rate=1e-4,
         save_total_limit=50,
         dataloader_pin_memory=False,
-        seed=42
+        seed=42,
+        save_steps=2000
+        
     )
 
     trainer = Trainer(

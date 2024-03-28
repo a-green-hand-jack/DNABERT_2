@@ -31,8 +31,9 @@ python dnabert-pretrain-k-mer.py --high_model_path="../tokenizer/tokenizer-confi
 
 > 这里，是联系`LineByLineDataset`和`Trainer`的关键一步，也是在这里消耗了很大的精力。
 
-1. 使用了`pad_sequence`保证了一个批次中的输入的tensor的长度都是一样的，因为我在`LineByLineDataset`中并没有使用`pad`
-2. 调用了`self.mask_tokens`，其实就是把`DataCollatorForLanguageModeling`中的这个函数抄了一遍
+1. 使用了`pad_sequence`保证了一个批次中的输入的tensor的长度都是一样的，因为我在`LineByLineDataset`中并没有使用`pad`；
+2. 同时，增加了一个`if instances.size(1) > self.tokenizer.model_max_length: instances = instances[:, :self.tokenizer.model_max_length]`，用来实现截断；
+3. 调用了`self.mask_tokens`，其实就是把`DataCollatorForLanguageModeling`中的这个函数抄了一遍
 
 这里的担心在于`pad_sequence`是不是合适的，因为这样按batch经行pad可能会导致**不同的batch之间，transformer的输入具有不同的形状**。
 
