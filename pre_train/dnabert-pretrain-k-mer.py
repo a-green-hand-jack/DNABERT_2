@@ -555,7 +555,7 @@ if __name__ == "__main__":
     # model = BertForPreTraining.from_pretrained("bert-base-uncased")   # 使用 base bert
     # model = BertForMaskedLM.from_pretrained("../zhihan1996/DNA_bert_6")    # 使用dnabert
     # 从预训练模型的配置创建模型实例，但是又不会使用预训练的参数
-    config = BertConfig.from_pretrained("../zhihan1996/DNA_bert_6")
+    config = BertConfig.from_pretrained("../wjk2002/DNA_bert_6")
     # 手动修改vocab_size属性为你想要的新值
     new_vocab_size = len(low_dna_tokenizer) + len(high_dna_tokenizer)
     config.vocab_size = new_vocab_size
