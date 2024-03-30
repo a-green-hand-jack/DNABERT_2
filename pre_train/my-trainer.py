@@ -1,4 +1,5 @@
-
+import transformers
+from transformers import BertForMaskedLM, TrainingArguments, Trainer, EarlyStoppingCallback
 from transformers import (
     AutoTokenizer,
     EvalPrediction,
@@ -24,6 +25,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader, IterableDataset, ConcatDataset
+from torch.nn.parallel import DataParallel
 import dataclasses
 from dataclasses import dataclass, field
 import os
@@ -34,8 +36,8 @@ from sklearn.metrics import (
     precision_recall_fscore_support
 )
 import random
+from tqdm import tqdm
 
-# from my_bert.modeling_bert import BertForMaskedLM
 class LineByLineTextDataset(Dataset):
     def __init__(self, file_path: str , high_tokenizer: PreTrainedTokenizer, low_tokenizer: PreTrainedTokenizer, high_len:int, low_len:int,):
         """
@@ -142,7 +144,12 @@ class LineByLineTextDataset(Dataset):
             raise IndexError(f"Index {index} is out of bounds.")
 
         high_tokenized_tensor = self.tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
-        
+
+        # print("打印 high-level tokenized tensor:\n", high_tokenized_tensor)
+        # print("打印 low-level tokenized tensor:\n", low_tokenized_tensor)
+
+        # return {"high-level":{'input_ids': high_tokenized_tensor}, "low-level":{'inputs': low_tokenized_tensor}}
+        # return {"high-level": {'input_ids': high_tokenized_tensor}, "low-level": {'input_ids': low_tokenized_tensor}}
         return {"input_ids":high_tokenized_tensor}
 
 @dataclass
@@ -157,9 +164,15 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         Returns:
             Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
         """
+
         max_length = self.tokenizer.model_max_length
-        if len(instances) > self.tokenizer.model_max_length:
-            instances = instances[:, :self.tokenizer.model_max_length]
+        # instances_list = []
+        # for instance in instances:
+        #     input_ids = instance['input_ids']
+        #     if len(input_ids) > max_length:
+        #         instances_list.append(input_ids[:max_length])
+        #     else:
+        #         instances_list.append(input_ids)
         instances_list = [instance['input_ids'][:max_length] for instance in instances]
         
 
@@ -217,19 +230,242 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels, attention_mask
     
+class MLMNetwork(nn.Module):
+    def __init__(self, model_name_or_path: str = "bert-base-uncased", cache_dir: str = None):
+        super(MLMNetwork, self).__init__()
+        print(f"load the pre-train model from {model_name_or_path}")
+        self.base_model = BertForMaskedLM.from_pretrained(model_name_or_path, cache_dir=cache_dir)
 
-def compute_mlm_metrics(p):
+    def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
+        """
+        Forward pass of the MLMNetwork model.
+
+        Args:
+            input_ids: Input tensor of token ids.
+            attention_mask: Optional tensor for attention mask.
+            labels: Optional tensor for masked language modeling labels.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            outputs: Model outputs from the base model.
+        """
+        outputs = self.base_model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        return outputs
+
+    @property
+    def device(self):
+        """
+        Property to get the device of the model parameters.
+
+        Returns:
+            device: Device of the model parameters.
+        """
+        return next(self.parameters()).device
+    
+@dataclass
+class LabelSmoother:
+    """
+    Adds label-smoothing on a pre-computed output from a Transformers model.
+
+    Args:
+        epsilon (`float`, *optional*, defaults to 0.1):
+            The label smoothing factor.
+        ignore_index (`int`, *optional*, defaults to -100):
+            The index in the labels to ignore when computing the loss.
+    """
+
+    epsilon: float = 0.1
+    ignore_index: int = -100
+
+    def __call__(self, model_output, labels, shift_labels=False):
+        logits = model_output["prediction_logits"] if isinstance(model_output, dict) else model_output[0]
+        if shift_labels:
+            logits = logits[..., :-1, :].contiguous()
+            labels = labels[..., 1:].contiguous()
+
+        log_probs = -nn.functional.log_softmax(logits, dim=-1)
+        if labels.dim() == log_probs.dim() - 1:
+            labels = labels.unsqueeze(-1)
+
+        padding_mask = labels.eq(self.ignore_index)
+        # In case the ignore_index is -100, the gather will fail, so we replace labels by 0. The padding_mask
+        # will ignore them in any case.
+        labels = torch.clamp(labels, min=0)
+        nll_loss = log_probs.gather(dim=-1, index=labels)
+        # works for fp16 input tensor too, by internally upcasting it to fp32
+        smoothed_loss = log_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
+
+        nll_loss.masked_fill_(padding_mask, 0.0)
+        smoothed_loss.masked_fill_(padding_mask, 0.0)
+
+        # Take the mean over the label dimensions, then divide by the number of active elements (i.e. not-padded):
+        num_active_elements = padding_mask.numel() - padding_mask.long().sum()
+        nll_loss = nll_loss.sum() / num_active_elements
+        smoothed_loss = smoothed_loss.sum() / (num_active_elements * log_probs.shape[-1])
+        return (1 - self.epsilon) * nll_loss + self.epsilon * smoothed_loss
+
+class MyTrainer(Trainer):
+    
+    
+    def compute_loss(self, model, inputs, return_outputs=False):
+        self.label_smoother = LabelSmoother(epsilon=self.args.label_smoothing_factor)
+        # 检查是否存在labels键
+        if "labels" in inputs:
+            labels = inputs.pop("labels")  # 从inputs中移除labels并保存
+        else:
+            labels = None
+        
+        # 使用模型处理inputs并获取输出
+        outputs = model(**inputs)
+
+        # 如果存在labels，则根据任务类型调用损失平滑器来计算损失
+        if labels is not None:
+            loss = self.label_smoother(outputs, labels)
+        # 如果不存在labels，则直接从模型输出中获取损失
+        else:
+            # 从outputs中获取损失
+            loss = outputs.loss if isinstance(outputs, dict) else outputs[0]
+        
+        # 返回损失和outputs（如果需要）
+        return (loss, outputs) if return_outputs else loss
+
+
+
+import torch
+from torch.utils.data import DataLoader
+from torch.nn.parallel import DataParallel
+from tqdm import tqdm
+
+class CustomTrainer:
+    def __init__(self, model, train_dataset, eval_dataset, compute_metrics_func, args, data_collator):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device)
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.compute_metrics = compute_metrics_func
+        self.args = args
+
+        # 自定义训练参数
+        self.gradient_accumulation_steps = args.gradient_accumulation_steps
+        self.learning_rate = args.learning_rate
+        self.num_train_epochs = args.num_train_epochs
+        self.eval_steps = args.eval_steps
+        # self.eval_steps = args.eval_steps
+        self.eval_strategy = args.evaluation_strategy
+        self.save_steps = args.save_steps
+        self.seed = args.seed
+
+        # 初始化优化器和学习率调度器
+        self.optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate, weight_decay=args.weight_decay)
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lambda epoch: 1 - epoch / self.num_train_epochs)
+        
+        # 创建DataLoader
+        self.train_dataloader = DataLoader(train_dataset, batch_size=args.per_device_train_batch_size, shuffle=True, num_workers=0, collate_fn=data_collator)
+        self.eval_dataloader = DataLoader(eval_dataset, batch_size=args.per_device_train_batch_size, shuffle=False, num_workers=0, collate_fn=data_collator)
+
+        # 使用DataParallel进行多GPU并行计算
+        if torch.cuda.device_count() > 1:
+            print("Using", torch.cuda.device_count(), "GPUs!")
+            self.model = DataParallel(self.model)
+
+    def train_epoch(self, epoch):
+        self.model.train()
+        train_loss = 0.0
+        progress_bar = tqdm(self.train_dataloader, desc=f"Train epoch {epoch + 1}", leave=False)
+        
+        for batch_id, batch in enumerate(progress_bar):
+            batch_gpu = {key: value.to(self.device) for key, value in batch.items()}
+            outputs = self.model(**batch_gpu)
+            loss = outputs.loss
+            # print(loss)
+            loss = torch.mean(loss)
+
+            # 梯度累积
+            loss = loss / self.gradient_accumulation_steps
+            loss.backward()
+            train_loss += loss.item()
+
+            # 每个batch步后更新模型参数
+            if (batch_id + 1) % self.gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+            # 更新进度条显示
+            progress_bar.set_postfix({'train_loss': loss.item()})  # 显示当前批次的损失值
+            
+            # 根据不同的验证策略选择验证的位置
+            if self.eval_strategy == 'steps':
+                if (batch_id + 1) % self.eval_steps == 0 :
+                    self.eval_epoch(epoch)
+                if (epoch + 1) % self.save_steps == 0:
+                    self.save_model_epoch(f"{epoch}_{(batch_id+1)}")
+
+        # 计算平均训练损失
+        train_loss /= len(self.train_dataloader)
+        # 更新进度条显示
+        progress_bar.set_postfix({'train_loss': train_loss / (progress_bar.n + 1)})  # 计算并更新平均训练损失
+
+        return train_loss
+
+    def eval_epoch(self, epoch):
+        self.model.eval()
+        eval_loss = 0.0
+        
+
+        progress_bar = tqdm(self.eval_dataloader, desc=f"Eval epoch {epoch + 1}", leave=False)
+        for batch in self.eval_dataloader:
+            with torch.no_grad():
+                batch_gpu = {key: value.to(self.device) for key, value in batch.items()}
+                outputs = self.model(**batch_gpu)
+                loss = outputs.loss
+                loss = torch.mean(loss)
+                eval_loss += loss.item()
+                eval_metrics = self.compute_metrics(outputs.logits, batch_gpu['labels'])
+                # 更新进度条显示
+                progress_bar.set_postfix({'eval_loss': loss.item(), 'eval_metrics':eval_metrics})  # 显示当前批次的损失值
+
+        eval_loss /= len(self.eval_dataloader)
+        # 更新进度条显示
+        progress_bar.set_postfix({'eval_loss': eval_loss, 'eval_metrics':eval_metrics})  # 计算并更新平均训练损失
+
+        return eval_loss, eval_metrics
+
+    def save_model_epoch(self, epoch):
+        # 保存模型和相关状态
+        model_to_save = self.model.module if hasattr(self.model, "module") else self.model  # 处理多GPU训练
+        model_to_save.save_pretrained(f"{self.args.output_dir}/epoch_{epoch}")
+
+    def train(self):
+        for epoch in range(self.num_train_epochs):
+            train_loss = self.train_epoch(epoch)
+            eval_loss, eval_metrics = self.eval_epoch(epoch)
+
+            # 打印训练和评估结果
+            print(f"Epoch {epoch + 1}: Train Loss: {train_loss}, Eval Loss: {eval_loss}, Eval Metrics: {eval_metrics}")
+
+            # 根据不同的验证策略选择验证的位置
+            if self.eval_strategy == 'epoch':
+                if (epoch + 1) % self.eval_steps == 0 :
+                    self.eval_epoch(epoch)
+
+                if (epoch + 1) % self.save_steps == 0:
+                    self.save_model_epoch(epoch)
+
+
+
+def compute_mlm_metrics(logits, labels):
     """
     Compute metrics for masked language model predictions.
 
     Args:
-        p: Prediction object containing predictions and labels.
+        logits (torch.Tensor): 模型的预测 logits，位于 GPU 上
+        labels (torch.Tensor): 真实标签，位于 GPU 上
 
     Returns:
-        dict: Dictionary containing accuracy, precision, recall, and F1 score.
+        dict: 包含 accuracy、precision、recall 和 F1 分数的字典。
     """
-    predictions = p.predictions.argmax(axis=2)  # Choose the label with the highest probability
-    labels = p.label_ids
+    predictions = logits.argmax(dim=-1).cpu().detach().numpy()
+    labels = labels.cpu().detach().numpy()
 
     # Calculate accuracy
     accuracy = accuracy_score(labels.flatten(), predictions.flatten())
@@ -238,6 +474,7 @@ def compute_mlm_metrics(p):
     precision, recall, f1, _ = precision_recall_fscore_support(labels.flatten(), predictions.flatten(), average='weighted')
 
     return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
+
 
 def print_tokenizer_features(tokenizer, tokenizer_name:str='default tokenizer'):
     # 打印特殊token及其对应的id
@@ -481,11 +718,9 @@ if __name__ == "__main__":
         per_device_eval_batch_size=args.per_device_train_batch_size,
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
-        logging_strategy="steps",
-        logging_steps=1000,
-        logging_dir=args.logging_dir,
-        evaluation_strategy="steps",    # please select one of ['no', 'steps', 'epoch']
-        eval_steps=100000,
+        evaluation_strategy="epoch",    # please select one of ['no', 'steps', 'epoch']
+        save_strategy='epoch',
+        eval_steps=100,
         load_best_model_at_end=True,
         greater_is_better=True,
         warmup_steps=50,
@@ -498,14 +733,8 @@ if __name__ == "__main__":
         
     )
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=dna_train_dataset,
-        data_collator=data_collator,
-        eval_dataset=dna_eval_dataset,
-        compute_metrics=compute_mlm_metrics
-    )
+
+    trainer = CustomTrainer(model, dna_train_dataset, dna_eval_dataset, compute_mlm_metrics, training_args, data_collator)
     trainer.train()
     # 指定保存路径
     # model_save_path = os.path.join(args.output_dir, "final_model_save")
@@ -513,6 +742,8 @@ if __name__ == "__main__":
     # 使用 save_pretrained 方法保存模型
     model_save_path = os.path.join(args.output_dir, "final_model_save")
     model.save_pretrained(model_save_path)
+
+
 
 
 

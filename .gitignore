@@ -5,7 +5,8 @@ models/*
 finetune/output
 zhihan1996/DNA_bert_3/pytorch_model.bin
 zhihan1996/DNA_bert_6/pytorch_model.bin
-zhihan1996/DNABERT-2-117M/pytorch_model.bi·n
+zhihan1996/DNABERT-2-117M/pytorch_model.bin
+wjk2002/bert-base-uncased/model.safetensors
 results
 zhihan1996.zip
 tokenizer/chunks
