@@ -450,7 +450,7 @@ def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_sa
 
         # 打印处理后的数据
         print("\n Processed data:\n", processed_data)
-        print(f"\n input_embeds's shape {processed_data['input_embeds'].shape}, teeantion_mask's shape {processed_data['attention_mask'].shape}, labels' shape {processed_data['labels'].shape}")          
+        print(f"\n input_embeds's shape {processed_data['inputs_embeds'].shape}, teeantion_mask's shape {processed_data['attention_mask'].shape}, labels' shape {processed_data['labels'].shape}")          
         # 打印model的输出
         output = model(**processed_data)
         print("\n Out put of the model:\n", output, "\n Shape of model output:",output.logits.shape)
@@ -681,7 +681,7 @@ if __name__ == "__main__":
         logging_steps=1000,
         logging_dir=args.logging_dir,
         evaluation_strategy="steps",    # please select one of ['no', 'steps', 'epoch']
-        eval_steps=100000,
+        eval_steps=1000,
         load_best_model_at_end=True,
         greater_is_better=True,
         warmup_steps=50,
@@ -690,7 +690,7 @@ if __name__ == "__main__":
         save_total_limit=50,
         dataloader_pin_memory=False,
         seed=42,
-        save_steps=100000
+        save_steps=1000
         
     )
 
