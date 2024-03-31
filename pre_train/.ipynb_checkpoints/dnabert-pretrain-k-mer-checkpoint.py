@@ -158,6 +158,8 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
             Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
         """
         max_length = self.tokenizer.model_max_length
+        if len(instances) > self.tokenizer.model_max_length:
+            instances = instances[:, :self.tokenizer.model_max_length]
         instances_list = [instance['input_ids'][:max_length] for instance in instances]
         
 

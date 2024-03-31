@@ -12,10 +12,6 @@ python dnabert-pretrain-k-mer.py --high_model_path="../tokenizer/tokenizer-confi
 python my-trainer.py --high_model_path="../tokenizer/tokenizer-config/dnabert-config/bert-config-6/vocab.txt"   --low_model_path="../tokenizer/tokenizer-config/dnabert-config/bert-config-3/vocab.txt"  --model_path="../tokenizer/tokenizer-config/dnabert-config/high-low-63-vocab.txt" --data_path="../../Datasets/Human_genome/huixin/24_chromosomes-002.txt" --output_dir="./my-trainer/results" --logging_dir="./my-trainer/logs"  --num_train_epochs=1 --per_device_train_batch_size=1
 ```
 
-```cmd
-python my-bert.py --high_model_path="../tokenizer/tokenizer-config/dnabert-config/bert-config-6/vocab.txt"   --low_model_path="../tokenizer/tokenizer-config/dnabert-config/bert-config-3/vocab.txt"  --model_path="../tokenizer/tokenizer-config/dnabert-config/high-low-63-vocab.txt" --data_path="../../Datasets/Human_genome/huixin/24_chromosomes-002-256.txt" --output_dir="./my-bert/results" --logging_dir="./my-bert/logs"  --num_train_epochs=1 --per_device_train_batch_size=1
-```
-
 但是需要注意输入的文件夹之间的对应关系~~~
 
 ## 解释说明

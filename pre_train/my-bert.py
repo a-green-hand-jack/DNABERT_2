@@ -14,9 +14,10 @@ from transformers import (
     TrainingArguments,
     BertConfig, 
     # LocalRationalAttention,
-    BertModel
+    BertModel,
 )
 from transformers.modeling_utils import PreTrainedModel, load_sharded_checkpoint, unwrap_model
+
 # from transformers.trainer_pt_utils import LabelSmoother
 from tokenizers import Tokenizer, models, pre_tokenizers
 from typing import Optional, Dict, Sequence, Tuple, List, Union, Any
@@ -34,6 +35,68 @@ from sklearn.metrics import (
     precision_recall_fscore_support
 )
 import random
+from pdb import set_trace as bp
+
+class BertEmbeddings(nn.Module):
+    """Construct the embeddings from word, position and token_type embeddings."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+
+        # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
+        # any TensorFlow checkpoint file
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        # position_ids (1, len position emb) is contiguous in memory and exported when serialized
+        self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
+        self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
+        self.register_buffer(
+            "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
+        )
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        token_type_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        past_key_values_length: int = 0,
+    ) -> torch.Tensor:
+        if input_ids is not None:
+            input_shape = input_ids.size()
+        else:
+            input_shape = inputs_embeds.size()[:-1]
+
+        seq_length = input_shape[1]
+
+        if position_ids is None:
+            position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
+
+        # Setting the token_type_ids to the registered buffer in constructor where it is all zeros, which usually occurs
+        # when its auto-generated, registered buffer helps users when tracing the model without passing token_type_ids, solves
+        # issue #5664
+        if token_type_ids is None:
+            if hasattr(self, "token_type_ids"):
+                buffered_token_type_ids = self.token_type_ids[:, :seq_length]
+                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(input_shape[0], seq_length)
+                token_type_ids = buffered_token_type_ids_expanded
+            else:
+                token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
+
+        if inputs_embeds is None:
+            inputs_embeds = self.word_embeddings(input_ids)
+        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+
+        embeddings = inputs_embeds + token_type_embeddings
+        if self.position_embedding_type == "absolute":
+            position_embeddings = self.position_embeddings(position_ids)
+            embeddings += position_embeddings
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
 
 # from my_bert.modeling_bert import BertForMaskedLM
 class LineByLineTextDataset(Dataset):
@@ -60,17 +123,31 @@ class LineByLineTextDataset(Dataset):
 
         print(f"Length of the dataset is {len(self.lines)}")
         
-    def insert_spaces(self, dna_sequence, interval):
+    def insert_spaces(self, dna_sequence: str, interval: int) -> str:
+        """
+        Insert spaces into a DNA sequence with a specified interval.
+        
+        Args:
+            dna_sequence (str): The input DNA sequence.
+            interval (int): The interval at which spaces should be inserted.
+
+        Returns:
+            str: The DNA sequence with spaces inserted at the specified interval.
+        """
         # 初始化结果字符串
         result = ""
         
+        # 计算子序列的长度
+        subsequence_length = interval
+        
         # 遍历 DNA 序列
-        for i, base in enumerate(dna_sequence):
-            # 每隔指定间隔插入一个空格
-            if i % interval == 0 and i != 0:
-                result += " "
-            # 添加当前碱基
-            result += base
+        for i in range(len(dna_sequence) - subsequence_length + 1):
+            # 获取当前子序列并添加到结果字符串中
+            subsequence = dna_sequence[i:i+subsequence_length]
+            result += subsequence + " "
+        
+        # 添加最后一个子序列
+        result += dna_sequence[-subsequence_length+1:]
         
         return result
 
@@ -103,13 +180,14 @@ class LineByLineTextDataset(Dataset):
 
         # 将token ID转换为tensor
         high_token_tensor = torch.tensor(high_token_ids, dtype=torch.long)
-        low_token_tensor = self.subtract_value_for_values(torch.tensor(low_token_ids, dtype=torch.long), len(tokenizer_high.vocab)) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
+        low_token_tensor = torch.tensor(low_token_ids, dtype=torch.long)
+        # low_token_tensor = self.subtract_value_for_values(torch.tensor(low_token_ids, dtype=torch.long), len(tokenizer_high.vocab)) + torch.tensor(len(tokenizer_high.vocab), dtype=torch.long)
 
         # 使用torch.cat()函数连接两个tensor
-        combined_tensor = torch.cat((high_token_tensor, low_token_tensor), dim=0)
+        # combined_tensor = torch.cat((high_token_tensor, low_token_tensor), dim=0)
 
 
-        return combined_tensor
+        return high_token_tensor, low_token_tensor
 
 
 
@@ -141,13 +219,21 @@ class LineByLineTextDataset(Dataset):
         if not lines:
             raise IndexError(f"Index {index} is out of bounds.")
 
-        high_tokenized_tensor = self.tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
+        high_tokenized_tensor, low_tokenized_tensor = self.tokenize_sequence(sequence=lines,tokenizer_high=self.high_tokenizer, tokenizer_low=self.low_tokenizer, high_token_len=self.high_len, low_token_len=self.low_len)
         
-        return {"input_ids":high_tokenized_tensor}
+        # return {"input_ids":high_tokenized_tensor}
+        return {"input_ids":{'high_level_tokens':high_tokenized_tensor, 'low_level_tokens':low_tokenized_tensor}}
 
 @dataclass
 class DataCollatorForMLM(DataCollatorForLanguageModeling):
-    def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    def __init__(self, tokenizer, config,mlm,mlm_probability):
+        super().__init__(tokenizer=tokenizer)
+        self.config = config
+        self.tokenizer = tokenizer
+        self.mlm = mlm
+        self.mlm_probability = mlm_probability
+        
+    def __call__(self, instances: Sequence[Dict[str, Dict[str, torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         """
         Collate function for masked language modeling.
 
@@ -157,23 +243,70 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
         Returns:
             Dict[str, torch.Tensor]: Dictionary containing input_ids, labels, and attention_mask tensors.
         """
+        # print(instances)
         max_length = self.tokenizer.model_max_length
-        instances_list = [instance['input_ids'][:max_length] for instance in instances]
+        # instances_list = [instance['input_ids'][:max_length] for instance in instances]
+        
+        high_level_instance_list = [instance['input_ids']['high_level_tokens'][:max_length] for instance in instances]
+        low_level_instancs_list = [instance['input_ids']['low_level_tokens'][:max_length] for instance in instances]
         
 
-        inputs = pad_sequence(
-            instances_list,
+        high_level_inputs = pad_sequence(
+            high_level_instance_list,
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id
         )
-
-        input_ids, labels, attention_masks = self.mask_tokens(inputs)
-        return dict(
-            input_ids=input_ids,
-            labels=labels,
-            attention_mask=attention_masks,
+        low_level_inputs = pad_sequence(
+            sequences=low_level_instancs_list,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id
         )
-    
+        
+        # print("打印padding之后的结果：\n", high_level_inputs, "\n", low_level_inputs)
+        high_input_ids, high_labels, high_attention_masks = self.mask_tokens(high_level_inputs)
+        low_input_ids, low_labels, low_attention_masks = self.mask_tokens(low_level_inputs)
+        # bp()
+        
+        
+        # return dict(
+        #     input_ids=input_ids,
+        #     labels=labels,
+        #     attention_mask=attention_masks,
+        # )
+        # bert_model = self.model.bert
+        # high_embedding_output = bert_model.embeddings(input_ids=high_input_ids)
+        # low_embedding_output = bert_model.embeddings(input_ids=low_input_ids)
+        high_bert_embedding = BertEmbeddings(self.config)
+        low_bert_embedding = BertEmbeddings(self.config)
+        high_embedding_output = high_bert_embedding(input_ids=high_input_ids)
+        low_embedding_output = low_bert_embedding(input_ids=low_input_ids)
+        combine_embedding = torch.cat((low_embedding_output, high_embedding_output), dim=1)
+        combine_labels = torch.cat((low_labels, high_labels), dim=1)
+        combine_attention_mask = torch.cat((low_attention_masks, high_attention_masks), dim=1)
+        
+        # print(low_input_ids.shape, "777")
+        # print(high_input_ids.shape, "666")
+        # # print(combine_embedding.shape, "888"*10)
+        # print(low_embedding_output.shape, "777")
+        # print(high_embedding_output.shape, "666")
+        # print(combine_embedding.shape, "888"*10)
+
+        
+        # return {'high_level':dict(
+        #     input_ids=high_input_ids,
+        #     labels=high_labels,
+        #     attention_mask = high_attention_masks,
+        # ),
+        #         'low_level':dict(
+        #             input_ids=low_input_ids,
+        #             labels=low_labels,
+        #             attention_mask=low_attention_masks
+        #         )}
+        
+        return {"inputs_embeds":combine_embedding, "attention_mask":combine_attention_mask, "labels":combine_labels}
+
+
+
     def mask_tokens(self, inputs: Any) -> Tuple[Any, Any, Any]:
         """
         Prepare masked tokens inputs/labels/attention_mask for masked language modeling: 80% MASK, 10% random, 10%
@@ -214,6 +347,7 @@ class DataCollatorForMLM(DataCollatorForLanguageModeling):
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels, attention_mask
+
     
 
 def compute_mlm_metrics(p):
@@ -278,7 +412,6 @@ def initialize_custom_bert_model(low_dna_tokenizer, high_dna_tokenizer, pre_mode
 
     return model
 
-
 def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_samples=3):
     
 
@@ -317,31 +450,95 @@ def print_processed_data_samples(dataset, data_collator, tokenizer, model,num_sa
 
         # 打印处理后的数据
         print("\n Processed data:\n", processed_data)
-
-        # 解码处理后的数据
-        decoded_text = tokenizer.batch_decode(processed_data['input_ids'], skip_special_tokens=True)
-
-        # 打印解码后的文本
-        print("\n Decoded text:\n", decoded_text)
-        
-        # 打印embedding（嵌入后的文本）
-        # Get embeddings
-        with torch.no_grad():
-            print("\n Embedding text shape:\n")
-            # 方法0：失败，因为BertForMaskedLM对象没有名为embeddings的属性
-            # embedding_token = model.embeddings(input_ids=processed_data['input_ids'])
-            # 方法1：使用模型的bert属性
-            bert_model = model.bert
-            embedding_output = bert_model.embeddings(input_ids=processed_data['input_ids'])
-
-            # 方法2：使用模型的get_input_embeddings()方法
-            # embedding_layer = model.get_input_embeddings()
-            # embedding_output = embedding_layer(processed_data['input_ids'])
-            print(embedding_output.shape)
-            
+        print(f"\n input_embeds's shape {processed_data['input_embeds'].shape}, teeantion_mask's shape {processed_data['attention_mask'].shape}, labels' shape {processed_data['labels'].shape}")          
         # 打印model的输出
         output = model(**processed_data)
-        print("\n Out put of the model:\n", output)
+        print("\n Out put of the model:\n", output, "\n Shape of model output:",output.logits.shape)
+
+# def print_processed_data_samples(dataset, data_collator, high_tokenizer, low_tokenizer, model,num_samples=3):
+    
+
+    # # 随机选择num_samples个样本
+    # sample_indices = random.sample(range(len(dataset)), num_samples)
+    # # 打印model的全部设定
+    # print('=============打印model的全部设定，也就是config==========================')
+    # print(model.config)
+
+    # # 打印模型结构
+    # print("Show the strucature of the model")
+    # print(model)
+    # # 打印嵌入层维度
+    # embedding_dimension = model.config.hidden_size
+    # print("model's embedding dimemsion:", embedding_dimension)
+    # # 计算模型的总参数数量
+    # total_params = sum(p.numel() for p in model.parameters())
+    # print("Total number of parameters in the model:", total_params)
+    # # 计算模型的可训练参数数量
+    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print("Number of trainable parameters:", trainable_params)
+    # # 打印模型使用的字典数量
+    # num_embeddings = model.config.vocab_size
+    # print("Number of embeddings in the model's vocabulary:", num_embeddings)
+
+    # for i, idx in enumerate(sample_indices):
+    #     print('*************打印第{}个例子的情况***************'.format(i))
+    #     sample = dataset[idx]
+
+    #     # 打印原始数据
+    #     print(f"\nSample {idx + 1}:")
+    #     print("\n Original data:\n", sample)
+
+    #     # 使用data collator处理数据
+    #     processed_data = data_collator([sample])
+
+    #     # 打印处理后的数据
+    #     print("\n Processed data:\n", processed_data)
+
+    #     # 解码处理后的数据
+    #     high_ids = processed_data['high_level']['input_ids']
+    #     low_ids = processed_data['low_level']['input_ids']
+    #     high_labels = processed_data['high_level']['labels']
+    #     low_labels = processed_data['low_level']['labels']
+    #     high_attention_mask = processed_data['high_level']['attention_mask']
+    #     low_attention_mask = processed_data['low_level']['attention_mask']
+    #     high_decoded_text = high_tokenizer.batch_decode(high_ids, skip_special_tokens=True)
+    #     low_decoded_text = low_tokenizer.batch_decode(low_ids, skip_special_tokens=True)
+
+    #     # 打印解码后的文本
+    #     print("\n Decoded high levle text:\n", high_decoded_text)
+    #     print("\n Decoded low level text:\n", low_decoded_text)
+        
+    #     # 打印embedding（嵌入后的文本）
+    #     # Get embeddings
+    #     with torch.no_grad():
+    #         print("\n Embedding text shape:\n")
+    #         # 方法0：失败，因为BertForMaskedLM对象没有名为embeddings的属性
+    #         # embedding_token = model.embeddings(input_ids=processed_data['input_ids'])
+    #         # 方法1：使用模型的bert属性
+    #         bert_model = model.bert
+    #         high_embedding_output = bert_model.embeddings(input_ids=high_ids)
+    #         low_embedding_output = bert_model.embeddings(input_ids=low_ids)
+    #         print("low embedding output:\n", low_embedding_output)
+    #         print("\n high embedding output:\n", high_embedding_output)
+
+    #         # 方法2：使用模型的get_input_embeddings()方法
+    #         # embedding_layer = model.get_input_embeddings()
+    #         # embedding_output = embedding_layer(processed_data['input_ids'])
+    #         # print(embedding_output.shape)
+            
+            
+    #         # 打印model的输出
+    #         high_output = model(**processed_data['high_level'])
+    #         low_output = model(**processed_data['low_level'])
+    #         print("\n The high level out of model:\n", high_output, "\n", high_output.logits.shape)
+    #         print("\n The low level out of mode:\n", low_output, "\n", low_output.logits.shape)
+            
+    #         combine_embedding = torch.cat((low_embedding_output, high_embedding_output), dim=1)
+    #         combine_input_ids = torch.cat((low_ids, high_ids), dim=1)
+    #         combine_labels = torch.cat((low_labels, high_labels), dim=1)
+    #         combine_attention_mask = torch.cat((low_attention_mask, high_attention_mask), dim=1)
+    #         combedding_output = model(**{"inputs_embeds":combine_embedding, "attention_mask":combine_attention_mask, "labels":combine_labels})
+    #         print("\n Combedding output of model:\n", combedding_output, "\n", combedding_output.logits.shape)
 
 def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: int = 42) -> Tuple[str, str]:
     """
@@ -384,8 +581,8 @@ def split_txt_file(input_file_path: str, split_ratio: float = 0.8, random_seed: 
     print(f"Total number of characters in the evaluation set: {eval_num_chars}")
 
     # Define output file paths
-    train_file_path = os.path.join(os.path.dirname(input_file_path), 'train.txt')
-    eval_file_path = os.path.join(os.path.dirname(input_file_path), 'eval.txt')
+    train_file_path = os.path.join(os.path.dirname(input_file_path), 'train-256.txt')
+    eval_file_path = os.path.join(os.path.dirname(input_file_path), 'eval-256.txt')
 
     # Write train lines to train file
     with open(train_file_path, 'w', encoding='utf-8') as train_file:
@@ -455,19 +652,20 @@ if __name__ == "__main__":
     dna_tokenizer = load_and_convert_tokenizer(args.model_path)
     print_tokenizer_features(dna_tokenizer, "dna tokenizer")
 
+    # 加载model的设定
+    dna_bert_6_config_path = '../wjk2002/DNA-BERT-6'
+    bert_base_config_path = '../wjk2002/bert-base-uncased'
+    model = initialize_custom_bert_model(low_dna_tokenizer=low_dna_tokenizer, high_dna_tokenizer=high_dna_tokenizer, pre_model_config_path=dna_bert_6_config_path)
+    
     # 加载DNA 数据集
     train_file_path, eval_file_path = split_txt_file(args.data_path, split_ratio=0.8, random_seed=42)
     dna_train_dataset = LineByLineTextDataset(file_path=train_file_path, high_len=6, low_len=3, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer)
     dna_eval_dataset = LineByLineTextDataset(file_path=eval_file_path, high_len=6, low_len=3, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer)
 
     # 使用 data_collator 处理数据
-    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15)
-    # 使用示例
+    data_collator = DataCollatorForMLM(tokenizer=dna_tokenizer, mlm=True, mlm_probability=0.15,config=model.config)
 
-    dna_bert_6_config_path = '../wjk2002/DNA-BERT-6'
-    bert_base_config_path = '../wjk2002/bert-base-uncased'
-    model = initialize_custom_bert_model(low_dna_tokenizer=low_dna_tokenizer, high_dna_tokenizer=high_dna_tokenizer, pre_model_config_path=dna_bert_6_config_path)
-
+    # print_processed_data_samples(dna_train_dataset, data_collator, high_tokenizer=high_dna_tokenizer, low_tokenizer=low_dna_tokenizer, model=model,num_samples=1)
     print_processed_data_samples(dna_train_dataset, data_collator, dna_tokenizer, model,1)
 
     # 开始训练
